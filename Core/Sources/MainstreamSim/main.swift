@@ -1,10 +1,10 @@
 import Foundation
-import LinkCore
+import MainstreamCore
 import CoreGraphics
 import ImageIO
 
 // Sweeps the rate ladder over synthetic channel conditions and reports goodput.
-// usage: LinkSim [camW camH] [frames]
+// usage: MainstreamSim [camW camH] [frames]
 
 let args = CommandLine.arguments
 let camW = args.count > 2 ? Int(args[1])! : 3840

@@ -1,13 +1,13 @@
 import SwiftUI
 import AVFoundation
-import LinkCore
+import MainstreamCore
 
 /// Streams acoustic frames to the speaker, keeping two frames queued.
 final class SoundPlayer: ObservableObject {
     @Published var level: Float = 0
     private let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
-    private let queue = DispatchQueue(label: "link.sound", qos: .userInteractive)
+    private let queue = DispatchQueue(label: "mainstream.sound", qos: .userInteractive)
     private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Acoustic.sampleRate, channels: 1, interleaved: false)!
     private var encoder: TransferEncoder?
     private var tx: AcousticTransmitter?

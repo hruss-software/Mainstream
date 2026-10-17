@@ -2,7 +2,7 @@ import SwiftUI
 import AVFoundation
 import CoreTransferable
 import UniformTypeIdentifiers
-import LinkCore
+import MainstreamCore
 
 /// Plays a video with the code hidden in it: a low-opacity overlay that alternates between
 /// the pattern and its complement every refresh (invisible to viewers, recovered by the camera).
@@ -12,7 +12,7 @@ final class HiddenView: UIView {
     private let player = AVQueuePlayer()
     private var looper: AVPlayerLooper?
     private var link: CADisplayLink?
-    private let producer = DispatchQueue(label: "link.hidden", qos: .userInteractive)
+    private let producer = DispatchQueue(label: "mainstream.hidden", qos: .userInteractive)
     private let lock = NSLock()
     private var ready: [(CGImage, CGImage)] = []
     private var current: (CGImage, CGImage)?

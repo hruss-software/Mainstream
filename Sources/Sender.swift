@@ -1,13 +1,13 @@
 import SwiftUI
 import UIKit
-import LinkCore
+import MainstreamCore
 
 /// Animated visible code filling its bounds. Density and frame rate are set from SwiftUI.
 final class CodeView: UIView {
     private let codeLayer = CALayer()
     private let headerLayer = CALayer()
     private var link: CADisplayLink?
-    private let producer = DispatchQueue(label: "link.render", qos: .userInteractive)
+    private let producer = DispatchQueue(label: "mainstream.render", qos: .userInteractive)
     private let lock = NSLock()
     private var ready: [CGImage] = []
     private var generation = 0

@@ -1,7 +1,7 @@
 import AVFoundation
 import Combine
 import UIKit
-import LinkCore
+import MainstreamCore
 
 enum LinkMode: String, CaseIterable {
     case screen, sound, hidden
@@ -36,11 +36,11 @@ final class Receiver: NSObject, ObservableObject {
     private var pipes: [CameraPipe] = []
     private var photoOutput: AVCapturePhotoOutput?
     private var photoDelegates: [PhotoDelegate] = []
-    private let sessionQueue = DispatchQueue(label: "link.session")
+    private let sessionQueue = DispatchQueue(label: "mainstream.session")
     private var running = false
 
     // shared decode state (ingestQueue only)
-    fileprivate let ingestQueue = DispatchQueue(label: "link.ingest", qos: .userInteractive)
+    fileprivate let ingestQueue = DispatchQueue(label: "mainstream.ingest", qos: .userInteractive)
     private let transfer = TransferDecoder()
     private var usefulTimes: [(TimeInterval, Int)] = []
     private var lastUseful: TimeInterval = 0
@@ -419,7 +419,7 @@ private final class CameraPipe: NSObject, AVCaptureVideoDataOutputSampleBufferDe
 
     init(owner: Receiver, index: Int) {
         self.owner = owner
-        queue = DispatchQueue(label: "link.video.\(index)", qos: .userInteractive)
+        queue = DispatchQueue(label: "mainstream.video.\(index)", qos: .userInteractive)
     }
 
     func makeOutput() -> AVCaptureVideoDataOutput {

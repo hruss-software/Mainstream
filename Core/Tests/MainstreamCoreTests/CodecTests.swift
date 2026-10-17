@@ -1,5 +1,5 @@
 import XCTest
-@testable import LinkCore
+@testable import MainstreamCore
 
 final class CodecTests: XCTestCase {
     func testReedSolomonErrorsAndErasures() {

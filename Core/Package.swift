@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "LinkCore",
+    name: "MainstreamCore",
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
-        .library(name: "LinkCore", targets: ["LinkCore"]),
+        .library(name: "MainstreamCore", targets: ["MainstreamCore"]),
     ],
     targets: [
         .target(
-            name: "LinkCore",
+            name: "MainstreamCore",
             swiftSettings: [.unsafeFlags(["-Ounchecked"])]
         ),
-        .executableTarget(name: "LinkSim", dependencies: ["LinkCore"]),
-        .testTarget(name: "LinkCoreTests", dependencies: ["LinkCore"]),
+        .executableTarget(name: "MainstreamSim", dependencies: ["MainstreamCore"]),
+        .testTarget(name: "MainstreamCoreTests", dependencies: ["MainstreamCore"]),
     ]
 )

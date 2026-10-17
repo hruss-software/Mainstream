@@ -1,6 +1,6 @@
-# Screen, sound and hidden-video data link
+# mainstream
 
-An iOS app with no name: its home-screen label is blank. It sends text, photos (from the library or taken in the app), audio recordings and any file between phones over three links:
+An iOS app that sends text, photos (from the library or taken in the app), audio recordings and any file between phones over three links:
 
 | Mode | Link | Simulated goodput |
 |---|---|---|
@@ -9,7 +9,7 @@ An iOS app with no name: its home-screen label is blank. It sends text, photos (
 | 🎞 Hidden | Data hidden in an ordinary video you pick, read by the camera | ~3–12 kB/s with a steady or slightly defocused camera |
 
 ## Build
-Open `App.xcodeproj` in Xcode 27.1, or run `xcodegen generate` after editing `project.yml`. Choose your signing team and run on two devices. The Run scheme uses Release because the decoders need optimisation to keep up.
+Open `mainstream.xcodeproj` in Xcode 27.1, or run `xcodegen generate` after editing `project.yml`. Choose your signing team and run on two devices. The Run scheme uses Release because the decoders need optimisation to keep up.
 
 ## Using it
 - The top-left picker selects the mode for both receiving and sending.
@@ -25,7 +25,7 @@ Open `App.xcodeproj` in Xcode 27.1, or run `xcodegen generate` after editing `pr
   - Hidden: pick a cover video, then sliders for density and strength (how visible the overlay is).
 - The receiver shows a progress ring and the live rate. A chevron says whether there's spare error-correction margin (↑, try denser or faster) or too much loss (↓).
 
-## How it works (`Core`, module `LinkCore`)
+## How it works (`Core`, module `MainstreamCore`)
 | Layer | Choice |
 |---|---|
 | Fountain | Systematic random linear code over GF(2). Blocks hold ≤1024 symbols of 180 bytes, with online Gaussian elimination. It's rateless, so lost packets only cost time. Overhead ≈1–2%. |
@@ -39,7 +39,7 @@ Open `App.xcodeproj` in Xcode 27.1, or run `xcodegen generate` after editing `pr
 ## Simulation and tests
 `swift test -c release` in `Core` covers Reed–Solomon, the fountain code, the end-to-end camera link, hidden-video recovery and an audio round trip on every band.
 
-`swift run -c release LinkSim` sweeps the screen ladder through a synthetic camera. The camera model includes perspective, blur, moiré, crosstalk, noise and vignetting. Environment switches select other runs:
+`swift run -c release MainstreamSim` sweeps the screen ladder through a synthetic camera. The camera model includes perspective, blur, moiré, crosstalk, noise and vignetting. Environment switches select other runs:
 
 | Switch | Runs |
 |---|---|

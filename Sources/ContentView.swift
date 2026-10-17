@@ -2,7 +2,7 @@ import SwiftUI
 import PhotosUI
 import AVFoundation
 import UniformTypeIdentifiers
-import LinkCore
+import MainstreamCore
 
 struct Outgoing: Identifiable {
     let id = UUID()

@@ -1,31 +1,31 @@
-name: App
+name: mainstream
 options:
   bundleIdPrefix: com.local
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
 packages:
-  LinkCore:
+  MainstreamCore:
     path: Core
 targets:
-  App:
+  mainstream:
     type: application
     platform: iOS
     sources:
       - Sources
     dependencies:
-      - package: LinkCore
-        product: LinkCore
+      - package: MainstreamCore
+        product: MainstreamCore
     settings:
       base:
-        PRODUCT_NAME: App
-        PRODUCT_BUNDLE_IDENTIFIER: com.local.opticallink
+        PRODUCT_NAME: mainstream
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.mainstream
         MARKETING_VERSION: "2.0"
         CURRENT_PROJECT_VERSION: "2"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: " "
+        INFOPLIST_KEY_CFBundleDisplayName: mainstream
         INFOPLIST_KEY_NSCameraUsageDescription: Receives data shown on another screen and takes photos to send.
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Receives data sent as sound and records audio to send.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -36,10 +36,10 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
 schemes:
-  App:
+  mainstream:
     build:
       targets:
-        App: all
+        mainstream: all
     run:
       config: Release
     archive:
