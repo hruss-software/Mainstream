@@ -1,27 +1,54 @@
-# Photon
+# Screen, sound and hidden-video data link
 
-Screen-to-camera data link for iOS. One phone shows an animated colour code, the other reads it with the camera. It can send text, photos, audio recordings and any file.
+An iOS app with no name: its home-screen label is blank. It sends text, photos (from the library or taken in the app), audio recordings and any file between phones over three links:
 
-Open `Photon.xcodeproj` (or run `xcodegen generate` after editing `project.yml`). Choose your signing team, then run on two devices. The Run scheme uses the Release configuration because the decoder needs optimisation to keep up with the camera.
+| Mode | Link | Simulated goodput |
+|---|---|---|
+| ▦ Screen | Animated colour code, read by the camera | ~0.4–1.9 MB/s depending on focus and distance |
+| 〰 Sound | OFDM over speaker → microphone: audible (0.5–15 kHz), whole range (0.2–20.5 kHz) or near-ultrasonic (17.5–21.5 kHz) | ~1.5–2.4 kB/s audible/whole range, ~0.3–0.45 kB/s near-ultrasonic |
+| 🎞 Hidden | Data hidden in an ordinary video you pick, read by the camera | ~3–12 kB/s with a steady or slightly defocused camera |
+
+## Build
+Open `App.xcodeproj` in Xcode 27.1, or run `xcodegen generate` after editing `project.yml`. Choose your signing team and run on two devices. The Run scheme uses Release because the decoders need optimisation to keep up.
 
 ## Using it
-- **Receive:** the app opens on the camera. Point it at the sender's screen. A ring shows progress and the live rate. A chevron means the receiver has spare error-correction margin (↑) or is losing too much (↓).
-- **Send:** tap the text, photo, audio or file icon.
-  - Swipe up or down on the code to change density (cells, bits per cell and parity).
-  - Swipe left or right to change the frame rate (60, 30, 20 fps and slower).
-  - Your last choices are remembered.
+- The top-left picker selects the mode for both receiving and sending.
+- **Camera controls (right edge):**
+  - Tap the preview to focus there.
+  - The slider sets the lens position manually (top = far, bottom = macro).
+  - The viewfinder button returns to continuous autofocus.
+  - The camera-pair button (on phones that support it) runs the wide and ultra-wide cameras together.
+- **Payload bar:** text, photo library, take a photo, record audio, file.
+- **Senders:**
+  - Screen: sliders for density and frame rate.
+  - Sound: band buttons and a rate slider.
+  - Hidden: pick a cover video, then sliders for density and strength (how visible the overlay is).
+- The receiver shows a progress ring and the live rate. A chevron says whether there's spare error-correction margin (↑, try denser or faster) or too much loss (↓).
 
-## How it works (`LinkCore`)
+## How it works (`Core`, module `LinkCore`)
 | Layer | Choice |
 |---|---|
-| Fountain | Systematic random linear code over GF(2), blocks of ≤1024 × 180-byte symbols, online Gaussian elimination. Rateless, so dropped frames only cost time. Overhead is about 1–2%. |
-| Packet | 7-byte header, 180-byte payload, CRC-32, Reed–Solomon parity (32–64 bytes). Every packet carries its own identity, so torn or blended camera frames still yield their clean regions. |
-| RS decode | Errors and erasures. Bytes with the lowest soft confidence are erased first when plain decoding fails. |
-| Frame | 4 QR-style finders, a level/aspect header (CRC-16, any rotation), 5×5 alignment markers every ~24 cells (corrects lens and perspective error), and codewords packed into 16×16-cell tiles. |
-| Modulation | 1, 2 (green/magenta) or 3 (RGB) bits per cell, scrambled so data is balanced. The receiver applies per-cell local mean/σ normalisation and a blind 3×3 colour-crosstalk inverse. |
-| Camera | Highest-resolution 60 fps format (4K60 on recent iPhones), BGRA, exposure capped at 1/250 s with −0.7 EV, near-range autofocus, stabilisation off. |
+| Fountain | Systematic random linear code over GF(2). Blocks hold ≤1024 symbols of 180 bytes, with online Gaussian elimination. It's rateless, so lost packets only cost time. Overhead ≈1–2%. |
+| Packet | 7-byte header, 180-byte payload, CRC-32, Reed–Solomon parity (32–64 bytes). Decoding handles errors and erasures, using the least-confident bytes as erasures. |
+| Screen frame | 4 finders (3 are enough). A CRC-16 header works in any rotation. 5×5 alignment markers sit every ~24 cells, and each codeword covers a near-square patch. |
+| Screen receiver | Per-cell local normalisation and blind colour-crosstalk inversion. A decision-feedback inter-cell equaliser roughly doubles goodput under defocus in simulation. |
+| Hidden video | The code is drawn over the video at opacity α. It alternates with its complement on every 60 Hz refresh, so viewers see only a faint uniform haze. The receiver sums ±1-weighted 8-frame windows of 60 fps captures to recover the code. It tracks polarity per region, because tearing can invert parts of the image. |
+| Sound | 1024-point OFDM with a 256-sample cyclic prefix and windowed overlap, and chirp sync. Data is carried by D-BPSK/QPSK/8PSK phase differences across symbols. A decision-directed correction removes phase slope from clock offset and Doppler. Each codeword byte stays on one carrier, so a weak carrier costs whole bytes that the decoder can erase. |
+| Camera | 60 fps at the highest resolution available (4K60 when single). Exposure is capped at 1/250 s, with −0.7 EV, near-range autofocus and stabilisation off. Multi-camera mode feeds both cameras into one transfer. That gives diversity (a second look and a different focus distance) rather than double the raw rate. |
 
-## Rate tuning
-`swift run -c release LinkSim` sweeps the ladder through a synthetic channel. The channel models perspective, blur, sub-pixel moiré, crosstalk, noise and vignetting. `TEMPORAL=1` adds display scan-out, rolling shutter and exposure blending. `DECODE=shot.png` decodes a screenshot of the sender.
+## Simulation and tests
+`swift test -c release` in `Core` covers Reed–Solomon, the fountain code, the end-to-end camera link, hidden-video recovery and an audio round trip on every band.
 
-In simulation, goodput rises with density until RS failures start to dominate, then falls off a cliff. Good conditions peak at level 12 and above (≈1–1.6 MB/s). Soft or distant conditions peak around levels 6–7 (≈300–400 kB/s). 60 fps frames beat 30 fps by 40–65% when the receiver processes 60 fps. The default is level 7 at 60 fps. The receiver's chevron tells you which way to move toward the crossover for your devices, distance and lighting.
+`swift run -c release LinkSim` sweeps the screen ladder through a synthetic camera. The camera model includes perspective, blur, moiré, crosstalk, noise and vignetting. Environment switches select other runs:
+
+| Switch | Runs |
+|---|---|
+| `TEMPORAL=1` | Display scan-out and rolling shutter |
+| `HIDDEN=1` | The hidden-video channel (`SHAKE=` adds hand shake) |
+| `AUDIO=1` | The acoustic modem through a simulated room (echoes, reverb, 40 ppm clock offset, noise) |
+| `DECODE=shot.png` | Decodes a screenshot of the sender |
+
+Findings that shaped the defaults:
+- **Screen:** goodput climbs with density until Reed–Solomon failures dominate, then falls off a cliff. 60 fps frames beat 30 fps.
+- **Hidden video:** moiré combined with hand shake is the limit. Optical defocus helps, but digital smoothing and frame registration did not, so neither is in the app.
+- **Sound:** D-QPSK on the whole band is the best default. 8PSK only pays off in quiet rooms.

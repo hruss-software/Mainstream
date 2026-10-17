@@ -7,38 +7,74 @@ import LinkCore
 struct Outgoing: Identifiable {
     let id = UUID()
     let payload: Payload
+    let mode: LinkMode
+    var cover: URL? = nil
 }
 
 struct ContentView: View {
     @StateObject private var rx = Receiver()
+    @AppStorage("mode") private var modeRaw = LinkMode.screen.rawValue
+    @AppStorage("multiCam") private var multiCam = false
     @State private var outgoing: Outgoing?
     @State private var composing = false
     @State private var recording = false
     @State private var importing = false
     @State private var photo: PhotosPickerItem?
+    @State private var awaitingCover: Payload?
+    @State private var coverPicker = false
+    @State private var cover: PhotosPickerItem?
+    @State private var flash = false
     @Environment(\.scenePhase) private var phase
+
+    private var mode: LinkMode { LinkMode(rawValue: modeRaw) ?? .screen }
 
     var body: some View {
         ZStack {
-            CameraPreview(session: rx.session)
+            CameraPreview(layer: rx.preview) { rx.focus(atLayerPoint: $0) }
                 .ignoresSafeArea()
-            Color.black.opacity(rx.locked ? 0 : 0.25)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-                .animation(.easeInOut(duration: 0.25), value: rx.locked)
+            if mode == .sound {
+                ListenView(level: rx.audioLevel, locked: rx.locked)
+                    .ignoresSafeArea()
+            } else {
+                Color.black.opacity(rx.locked ? 0 : 0.25)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .animation(.easeInOut(duration: 0.25), value: rx.locked)
+            }
+            Color.white.opacity(flash ? 0.8 : 0).ignoresSafeArea().allowsHitTesting(false)
             if rx.active {
                 ReceiveGauge(progress: rx.progress, rate: rx.rate, hint: rx.hint)
                     .transition(.opacity)
             }
-            VStack {
+            VStack(spacing: 0) {
+                HStack(alignment: .top) {
+                    ModePicker(mode: Binding(get: { mode }, set: { modeRaw = $0.rawValue }))
+                    Spacer()
+                    if rx.dualActive && mode != .sound {
+                        PipPreview(layer: rx.pipPreview)
+                            .frame(width: 84, height: 112)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 6)
                 Spacer()
-                HStack(spacing: 34) {
+                if mode != .sound {
+                    HStack {
+                        Spacer()
+                        CameraControls(rx: rx, multiCam: $multiCam)
+                    }
+                    .padding(.trailing, 12)
+                }
+                Spacer()
+                HStack(spacing: 26) {
                     Button { composing = true } label: { icon("textformat") }
                     PhotosPicker(selection: $photo, matching: .images) { icon("photo") }
-                    Button { recording = true } label: { icon("waveform") }
+                    Button { shoot() } label: { icon("camera") }
+                    Button { recording = true } label: { icon("mic") }
                     Button { importing = true } label: { icon("doc") }
                 }
-                .padding(.horizontal, 28)
+                .padding(.horizontal, 24)
                 .padding(.vertical, 16)
                 .background(.ultraThinMaterial, in: Capsule())
                 .padding(.bottom, 12)
@@ -47,12 +83,20 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.2), value: rx.active)
         .preferredColorScheme(.dark)
         .onAppear {
-            rx.start()
+            rx.setMultiCam(multiCam)
+            rx.start(mode: mode)
             if let i = CommandLine.arguments.firstIndex(of: "-demoSend"), i + 1 < CommandLine.arguments.count {
-                send(Payload(kind: .text, name: "text.txt", data: Data(CommandLine.arguments[i + 1].utf8)))
+                let m = CommandLine.arguments.firstIndex(of: "-demoMode").map { LinkMode(rawValue: CommandLine.arguments[$0 + 1]) ?? .screen } ?? .screen
+                let cov = CommandLine.arguments.firstIndex(of: "-demoCover").map { URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) }
+                outgoing = Outgoing(payload: Payload(kind: .text, name: "text.txt", data: Data(CommandLine.arguments[i + 1].utf8)), mode: m, cover: cov)
             }
         }
-        .onChange(of: phase) { _, p in p == .active && outgoing == nil ? rx.start() : rx.stop() }
+        .onChange(of: phase) { _, p in
+            if p == .active && outgoing == nil && !recording { rx.start(mode: mode) } else if p != .active { rx.stop() }
+        }
+        .onChange(of: modeRaw) { _, _ in rx.setMode(mode) }
+        .onChange(of: multiCam) { _, on in rx.setMultiCam(on) }
+        .onChange(of: outgoing?.id) { _, id in if id != nil { rx.stop() } }
         .onChange(of: photo) { _, item in
             guard let item else { return }
             Task {
@@ -63,38 +107,55 @@ struct ContentView: View {
                 photo = nil
             }
         }
+        .photosPicker(isPresented: $coverPicker, selection: $cover, matching: .videos)
+        .onChange(of: cover) { _, item in
+            guard let item, let p = awaitingCover else { return }
+            Task {
+                if let m = try? await item.loadTransferable(type: PickedMovie.self) {
+                    outgoing = Outgoing(payload: p, mode: .hidden, cover: m.url)
+                }
+                awaitingCover = nil
+                cover = nil
+            }
+        }
         .sheet(isPresented: $composing) {
             TextComposer { send(Payload(kind: .text, name: "text.txt", data: Data($0.utf8))) }
         }
-        .sheet(isPresented: $recording) {
+        .sheet(isPresented: $recording, onDismiss: { if outgoing == nil { rx.start(mode: mode) } }) {
             AudioRecorderView { url in
                 if let d = try? Data(contentsOf: url) { send(Payload(kind: .audio, name: "audio.m4a", data: d)) }
             }
             .presentationDetents([.medium])
+            .onAppear { rx.stop() }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
             guard case .success(let url) = result else { return }
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             if let d = try? Data(contentsOf: url) {
-                let kind: PayloadKind = UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true ? .audio
-                    : UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true ? .image : .file
+                let t = UTType(filenameExtension: url.pathExtension)
+                let kind: PayloadKind = t?.conforms(to: .audio) == true ? .audio : t?.conforms(to: .image) == true ? .image : .file
                 send(Payload(kind: kind, name: url.lastPathComponent, data: d))
             }
         }
-        .fullScreenCover(item: $outgoing, onDismiss: { rx.start() }) { o in
-            SenderScreen(payload: o.payload) { outgoing = nil }
-                .ignoresSafeArea()
-                .statusBarHidden()
-                .persistentSystemOverlays(.hidden)
-                .onAppear {
-                    UIApplication.shared.isIdleTimerDisabled = true
-                    Brightness.boost()
+        .fullScreenCover(item: $outgoing, onDismiss: { rx.start(mode: mode) }) { o in
+            Group {
+                switch o.mode {
+                case .screen: VisibleSender(payload: o.payload) { outgoing = nil }
+                case .sound: SoundSender(payload: o.payload) { outgoing = nil }
+                case .hidden: HiddenSender(payload: o.payload, video: o.cover!) { outgoing = nil }
                 }
-                .onDisappear {
-                    UIApplication.shared.isIdleTimerDisabled = false
-                    Brightness.restore()
-                }
+            }
+            .statusBarHidden()
+            .persistentSystemOverlays(.hidden)
+            .onAppear {
+                UIApplication.shared.isIdleTimerDisabled = true
+                if o.mode != .sound { Brightness.boost() }
+            }
+            .onDisappear {
+                UIApplication.shared.isIdleTimerDisabled = false
+                Brightness.restore()
+            }
         }
         .sheet(item: $rx.received, onDismiss: { rx.reset() }) { r in
             ResultView(payload: r.payload)
@@ -108,22 +169,112 @@ struct ContentView: View {
             .frame(width: 30, height: 30)
     }
 
+    private func shoot() {
+        withAnimation(.easeOut(duration: 0.08)) { flash = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { withAnimation(.easeIn(duration: 0.2)) { flash = false } }
+        rx.capturePhoto { data in send(Payload(kind: .image, name: "photo.heic", data: data)) }
+    }
+
     private func send(_ p: Payload) {
-        rx.stop()
-        outgoing = Outgoing(payload: p)
+        if mode == .hidden {
+            awaitingCover = p
+            coverPicker = true
+        } else {
+            outgoing = Outgoing(payload: p, mode: mode)
+        }
+    }
+}
+
+struct ModePicker: View {
+    @Binding var mode: LinkMode
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach([(LinkMode.screen, "qrcode"), (.sound, "waveform"), (.hidden, "film")], id: \.0) { m, icon in
+                Button { mode = m } label: {
+                    Image(systemName: icon)
+                        .font(.system(size: 17, weight: .medium))
+                        .frame(width: 46, height: 36)
+                        .foregroundStyle(mode == m ? .black : .white)
+                        .background(mode == m ? Color.white : .clear, in: Capsule())
+                }
+            }
+        }
+        .padding(3)
+        .background(.ultraThinMaterial, in: Capsule())
+    }
+}
+
+/// Vertical focus slider (top = far), auto-focus reset, and multi-camera toggle.
+struct CameraControls: View {
+    @ObservedObject var rx: Receiver
+    @Binding var multiCam: Bool
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "mountain.2").font(.system(size: 13))
+            Slider(value: Binding(get: { Double(rx.lensPosition) }, set: { rx.setLens(Float($0)) }), in: 0...1)
+                .frame(width: 190)
+                .rotationEffect(.degrees(-90))
+                .frame(width: 30, height: 190)
+            Image(systemName: "camera.macro").font(.system(size: 13))
+            Button { rx.continuousFocus() } label: {
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(rx.manualFocus ? .white : .yellow)
+                    .frame(width: 36, height: 36)
+            }
+            if Receiver.multiCamSupported {
+                Button { multiCam.toggle() } label: {
+                    Image(systemName: "camera.on.rectangle")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(multiCam ? .yellow : .white)
+                        .frame(width: 36, height: 36)
+                }
+            }
+        }
+        .foregroundStyle(.white.opacity(0.85))
+        .padding(.vertical, 12)
+        .padding(.horizontal, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+    }
+}
+
+struct ListenView: View {
+    let level: Float
+    let locked: Bool
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.82)
+            ZStack {
+                Circle().stroke(.white.opacity(locked ? 0.5 : 0.15), lineWidth: 2)
+                    .frame(width: 160, height: 160)
+                    .scaleEffect(1 + CGFloat(min(1, level)) * 0.4)
+                    .animation(.easeOut(duration: 0.1), value: level)
+                Image(systemName: "waveform")
+                    .font(.system(size: 44, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            .offset(y: -120)
+        }
+        .allowsHitTesting(false)
     }
 }
 
 enum Brightness {
     private static var saved: CGFloat?
+    private static var screen: UIScreen? {
+        UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen }.first
+    }
     static func boost() {
-        guard let screen = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.screen }).first else { return }
-        saved = screen.brightness
-        screen.brightness = 1
+        guard let s = screen else { return }
+        saved = s.brightness
+        s.brightness = 1
     }
     static func restore() {
-        guard let s = saved, let screen = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.screen }).first else { return }
-        screen.brightness = s
+        guard let v = saved, let s = screen else { return }
+        s.brightness = v
         saved = nil
     }
 }
@@ -159,25 +310,67 @@ struct ReceiveGauge: View {
     }
 }
 
+/// Hosts the receiver's preview layer; taps focus at that point.
 struct CameraPreview: UIViewRepresentable {
-    let session: AVCaptureSession
+    let layer: AVCaptureVideoPreviewLayer
+    let onTap: (CGPoint) -> Void
 
-    final class PreviewView: UIView {
-        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
-        var preview: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+    final class Host: UIView {
+        var preview: AVCaptureVideoPreviewLayer?
+        var onTap: ((CGPoint) -> Void)?
         override func layoutSubviews() {
             super.layoutSubviews()
-            if let c = preview.connection, c.isVideoRotationAngleSupported(90) { c.videoRotationAngle = 90 }
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            preview?.frame = bounds
+            CATransaction.commit()
+            if let c = preview?.connection, c.isVideoRotationAngleSupported(90) { c.videoRotationAngle = 90 }
+        }
+        @objc func tapped(_ g: UITapGestureRecognizer) {
+            onTap?(g.location(in: self))
+            let ring = CAShapeLayer()
+            let p = g.location(in: self)
+            ring.path = UIBezierPath(roundedRect: CGRect(x: p.x - 36, y: p.y - 36, width: 72, height: 72), cornerRadius: 8).cgPath
+            ring.strokeColor = UIColor.systemYellow.cgColor
+            ring.fillColor = nil
+            ring.lineWidth = 1.5
+            layer.addSublayer(ring)
+            UIView.animate(withDuration: 0.6, delay: 0.4) { ring.opacity = 0 } completion: { _ in ring.removeFromSuperlayer() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ring.removeFromSuperlayer() }
         }
     }
 
-    func makeUIView(context: Context) -> PreviewView {
-        let v = PreviewView()
-        v.preview.session = session
-        v.preview.videoGravity = .resizeAspectFill
+    func makeUIView(context: Context) -> Host {
+        let v = Host()
         v.backgroundColor = .black
+        v.preview = layer
+        v.onTap = onTap
+        v.layer.addSublayer(layer)
+        v.addGestureRecognizer(UITapGestureRecognizer(target: v, action: #selector(Host.tapped(_:))))
         return v
     }
 
-    func updateUIView(_ uiView: PreviewView, context: Context) {}
+    func updateUIView(_ v: Host, context: Context) { v.setNeedsLayout() }
+}
+
+struct PipPreview: UIViewRepresentable {
+    let layer: AVCaptureVideoPreviewLayer
+
+    final class Host: UIView {
+        var preview: AVCaptureVideoPreviewLayer?
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            preview?.frame = bounds
+            if let c = preview?.connection, c.isVideoRotationAngleSupported(90) { c.videoRotationAngle = 90 }
+        }
+    }
+
+    func makeUIView(context: Context) -> Host {
+        let v = Host()
+        v.backgroundColor = .black
+        v.preview = layer
+        v.layer.addSublayer(layer)
+        return v
+    }
+
+    func updateUIView(_ v: Host, context: Context) { v.setNeedsLayout() }
 }
