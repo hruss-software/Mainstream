@@ -39,7 +39,14 @@ final class Receiver: NSObject, ObservableObject {
     private var photoOutput: AVCapturePhotoOutput?
     private var photoDelegates: [PhotoDelegate] = []
     private let sessionQueue = DispatchQueue(label: "mainstream.session")
+    // sessionQueue only
     private var running = false
+    private var wantMulti = false
+    private var sessionMode: LinkMode = .screen
+    private var pressureWatch: [NSKeyValueObservation] = []
+    private var lastRestart: TimeInterval = 0
+    /// main thread: the camera the focus slider follows
+    private var focusDevice: AVCaptureDevice?
 
     // shared decode state (ingestQueue only)
     fileprivate let ingestQueue = DispatchQueue(label: "mainstream.ingest", qos: .userInteractive)
@@ -47,6 +54,8 @@ final class Receiver: NSObject, ObservableObject {
     private var usefulTimes: [(TimeInterval, Int)] = []
     private var lastUseful: TimeInterval = 0
     private var lastLock: TimeInterval = 0
+    private var firstLock: TimeInterval?      // start of the current transfer (sound rate average)
+    private var soundHint = 0
     private var lastPublish: TimeInterval = 0
     private var okEMA = 0.0, loadEMA = 0.0
     fileprivate var mode: LinkMode = .screen
@@ -59,7 +68,6 @@ final class Receiver: NSObject, ObservableObject {
     private var wantListening = false
     private var lastTap: TimeInterval = 0
     private var watchdog: Timer?
-    private var uiMode: LinkMode = .screen
 
     override init() {
         super.init()
@@ -73,15 +81,18 @@ final class Receiver: NSObject, ObservableObject {
             if t == .ended { self?.restartListening() }
         }
         nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in self?.restartListening() }
+        // camera failures (often a multi-camera pair overheating) fall back instead of going dark
+        nc.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: nil, queue: nil) { [weak self] n in self?.sessionFailed(n, interrupted: false) }
+        nc.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: nil, queue: nil) { [weak self] n in self?.sessionFailed(n, interrupted: true) }
     }
 
     // MARK: lifecycle
 
     func setMode(_ m: LinkMode) {
-        uiMode = m
-        ingestQueue.async { self.mode = m; self.transfer.reset(); self.usefulTimes.removeAll() }
+        ingestQueue.async { self.mode = m; self.transfer.reset(); self.usefulTimes.removeAll(); self.firstLock = nil }
         // sound mode turns the camera off so it can't take over the audio session
         sessionQueue.async { [self] in
+            sessionMode = m
             if m == .sound { session?.stopRunning() } else if running {
                 if session == nil { build() }
                 if let s = session, !s.isRunning { s.startRunning() }
@@ -106,7 +117,7 @@ final class Receiver: NSObject, ObservableObject {
     }
 
     func reset() {
-        ingestQueue.async { self.transfer.reset(); self.usefulTimes.removeAll() }
+        ingestQueue.async { self.transfer.reset(); self.usefulTimes.removeAll(); self.firstLock = nil }
         progress = 0
         active = false
     }
@@ -115,31 +126,78 @@ final class Receiver: NSObject, ObservableObject {
         guard on != multiCam else { return }
         multiCam = on
         sessionQueue.async { [self] in
+            wantMulti = on
             session?.stopRunning()
             build()
-            if running { session?.startRunning() }
+            if running && sessionMode != .sound { session?.startRunning() }
+        }
+    }
+
+    /// sessionQueue: a multi-camera session failed or the phone is too hot for it, so carry on
+    /// with one camera (and turn the toggle off).
+    private func fallBackToSingleCamera() {
+        guard wantMulti else { return }
+        wantMulti = false
+        session?.stopRunning()
+        build()
+        if running && sessionMode != .sound { session?.startRunning() }
+        DispatchQueue.main.async { self.multiCam = false }
+    }
+
+    private func sessionFailed(_ n: Notification, interrupted: Bool) {
+        guard let s = n.object as? AVCaptureSession else { return }
+        if interrupted {
+            let reason = (n.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int).flatMap(AVCaptureSession.InterruptionReason.init)
+            guard reason == .videoDeviceNotAvailableDueToSystemPressure else { return }
+        }
+        sessionQueue.async { [self] in
+            guard s === session else { return }
+            if s is AVCaptureMultiCamSession {
+                fallBackToSingleCamera()
+            } else if !interrupted && running && sessionMode != .sound && CACurrentMediaTime() - lastRestart > 2 {
+                lastRestart = CACurrentMediaTime()
+                s.startRunning()
+            }
         }
     }
 
     // MARK: camera graph
 
+    /// sessionQueue only.
     private func build() {
+        pressureWatch.forEach { $0.invalidate() }
+        pressureWatch = []
         if let old = session {
+            old.stopRunning()
             old.beginConfiguration()
             for c in old.connections { old.removeConnection(c) }
             for i in old.inputs { old.removeInput(i) }
             for o in old.outputs { old.removeOutput(o) }
             old.commitConfiguration()
         }
+        session = nil
         pipes = []
-        devices = []
+        setDevices([])
         photoOutput = nil
-        if multiCam && Receiver.multiCamSupported, buildMulti() {
+        if wantMulti && Receiver.multiCamSupported, buildMulti() {
             DispatchQueue.main.async { self.dualActive = true }
-            return
+        } else {
+            buildSingle()
+            DispatchQueue.main.async { self.dualActive = false }
         }
-        buildSingle()
-        DispatchQueue.main.async { self.dualActive = false }
+        // shed frame rate before the system shuts a hot camera down
+        pressureWatch = devices.map { d in
+            d.observe(\.systemPressureState, options: [.new]) { [weak self] dev, _ in
+                let level = dev.systemPressureState.level
+                self?.sessionQueue.async { self?.pressureChanged(dev, level) }
+            }
+        }
+    }
+
+    private func setDevices(_ d: [AVCaptureDevice]) {
+        devices = d
+        let first = d.first
+        DispatchQueue.main.async { self.focusDevice = first }
     }
 
     private func buildSingle() {
@@ -157,15 +215,16 @@ final class Receiver: NSObject, ObservableObject {
         let photo = AVCapturePhotoOutput()
         if s.canAddOutput(photo) { s.addOutput(photo); photoOutput = photo }
         s.commitConfiguration()
-        configure(device, formats: device.formats, cost: nil)
+        _ = configure(device, formats: device.formats, cost: nil)
         session = s
-        devices = [device]
+        setDevices([device])
         pipes = [pipe]
         preview.session = s
         pipPreview.session = nil
     }
 
-    /// Wide + ultra-wide (or telephoto) running together; both feed one transfer.
+    /// Wide + ultra-wide (or telephoto) running together; both feed one transfer. Returns false,
+    /// leaving nothing attached, if the pair can't be set up within the hardware budget.
     private func buildMulti() -> Bool {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInWideAngleCamera, .builtInUltraWideCamera, .builtInTelephotoCamera], mediaType: .video, position: .back)
@@ -180,6 +239,7 @@ final class Receiver: NSObject, ObservableObject {
         s.beginConfiguration()
         var ok = true
         var newPipes: [CameraPipe] = []
+        var photo: AVCapturePhotoOutput?
         for (i, dev) in [wide, second].enumerated() {
             guard let input = try? AVCaptureDeviceInput(device: dev), s.canAddInput(input) else { ok = false; break }
             s.addInputWithNoConnections(input)
@@ -198,34 +258,54 @@ final class Receiver: NSObject, ObservableObject {
             let pc = AVCaptureConnection(inputPort: port, videoPreviewLayer: layer)
             if s.canAddConnection(pc) { s.addConnection(pc) }
             if i == 0 {
-                let photo = AVCapturePhotoOutput()
-                if s.canAddOutput(photo) {
-                    s.addOutputWithNoConnections(photo)
-                    let ph = AVCaptureConnection(inputPorts: [port], output: photo)
-                    if s.canAddConnection(ph) { s.addConnection(ph); photoOutput = photo }
+                let p = AVCapturePhotoOutput()
+                if s.canAddOutput(p) {
+                    s.addOutputWithNoConnections(p)
+                    let ph = AVCaptureConnection(inputPorts: [port], output: p)
+                    if s.canAddConnection(ph) { s.addConnection(ph); photo = p }
                 }
             }
         }
-        // highest multi-cam formats the hardware budget allows
+        // Two streams at up to 1440p each: 4K pairs exhaust the bandwidth and memory budget on
+        // most phones, and the pair is there for a second look, not for resolution.
         if ok {
-            for dev in [wide, second] { configure(dev, formats: dev.formats.filter(\.isMultiCamSupported), cost: s) }
+            for dev in [wide, second] {
+                let formats = dev.formats.filter { $0.isMultiCamSupported && CMVideoFormatDescriptionGetDimensions($0.formatDescription).width <= 1920 }
+                if !configure(dev, formats: formats, cost: s) { ok = false; break }
+            }
         }
         s.commitConfiguration()
-        guard ok, s.hardwareCost <= 1 else {
+        guard ok, s.hardwareCost <= 1, s.systemPressureCost <= 1 else {
+            // tear down completely so the single-camera session can take the devices
+            s.beginConfiguration()
             for c in s.connections { s.removeConnection(c) }
+            for i in s.inputs { s.removeInput(i) }
+            for o in s.outputs { s.removeOutput(o) }
+            s.commitConfiguration()
             preview.session = nil
             pipPreview.session = nil
             return false
         }
         session = s
-        devices = [wide, second]
+        setDevices([wide, second])
         pipes = newPipes
+        photoOutput = photo
         return true
     }
 
-    /// 60 fps at the highest resolution available (within the multi-cam budget), short
-    /// exposures, near-range autofocus.
-    private func configure(_ device: AVCaptureDevice, formats: [AVCaptureDevice.Format], cost: AVCaptureMultiCamSession?) {
+    /// Sets a frame duration the active format actually supports (an unsupported one throws).
+    private func setFrameRate(_ device: AVCaptureDevice, _ fps: Double) {
+        guard let r = device.activeFormat.videoSupportedFrameRateRanges.max(by: { $0.maxFrameRate < $1.maxFrameRate }) else { return }
+        var dur = CMTime(value: 1000, timescale: CMTimeScale((min(fps, r.maxFrameRate) * 1000).rounded()))
+        if CMTimeCompare(dur, r.minFrameDuration) < 0 { dur = r.minFrameDuration }
+        if CMTimeCompare(dur, r.maxFrameDuration) > 0 { dur = r.maxFrameDuration }
+        device.activeVideoMinFrameDuration = dur
+        device.activeVideoMaxFrameDuration = dur
+    }
+
+    /// 60 fps at the highest resolution available (within the multi-cam budget, where 30 fps is
+    /// the fallback), short exposures, near-range autofocus. False if nothing fits the budget.
+    private func configure(_ device: AVCaptureDevice, formats: [AVCaptureDevice.Format], cost: AVCaptureMultiCamSession?) -> Bool {
         func fps(_ f: AVCaptureDevice.Format) -> Double { f.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0 }
         let candidates = formats.filter { f in
             let sub = CMFormatDescriptionGetMediaSubType(f.formatDescription)
@@ -238,17 +318,19 @@ final class Receiver: NSObject, ObservableObject {
             let da = CMVideoFormatDescriptionGetDimensions(a.formatDescription), db = CMVideoFormatDescriptionGetDimensions(b.formatDescription)
             return Int(da.width) * Int(da.height) > Int(db.width) * Int(db.height)
         }
-        guard (try? device.lockForConfiguration()) != nil else { return }
+        guard (try? device.lockForConfiguration()) != nil else { return false }
         defer { device.unlockForConfiguration() }
-        for fmt in candidates {
+        var fits = cost == nil
+        search: for fmt in candidates {
             device.activeFormat = fmt
-            if let s = cost, s.hardwareCost > 1 { continue }
-            let rate = min(60, fps(fmt))
-            let dur = CMTime(value: 1, timescale: CMTimeScale(rate.rounded()))
-            device.activeVideoMinFrameDuration = dur
-            device.activeVideoMaxFrameDuration = dur
-            break
+            for rate in cost == nil ? [60.0] : [60, 30] {
+                setFrameRate(device, rate)
+                if let s = cost, s.hardwareCost > 1 { continue }
+                fits = true
+                break search
+            }
         }
+        guard fits else { return false }
         let fmt = device.activeFormat
         if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
         if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = .near }
@@ -257,11 +339,25 @@ final class Receiver: NSObject, ObservableObject {
         if CMTimeCompare(maxExp, fmt.minExposureDuration) > 0 && CMTimeCompare(maxExp, fmt.maxExposureDuration) < 0 {
             device.activeMaxExposureDuration = maxExp
         }
-        device.setExposureTargetBias(-0.7)
+        device.setExposureTargetBias(max(device.minExposureTargetBias, min(device.maxExposureTargetBias, -0.7)))
         if fmt.isVideoHDRSupported {
             device.automaticallyAdjustsVideoHDREnabled = false
             device.isVideoHDREnabled = false
         }
+        return true
+    }
+
+    /// sessionQueue: halve the frame rate under thermal or power pressure, restore it when it
+    /// eases, and drop to one camera before the system shuts the pair down.
+    private func pressureChanged(_ device: AVCaptureDevice, _ level: AVCaptureDevice.SystemPressureState.Level) {
+        guard devices.contains(device) else { return }
+        if level == .shutdown || (level == .critical && devices.count > 1) {
+            fallBackToSingleCamera()
+            return
+        }
+        guard (try? device.lockForConfiguration()) != nil else { return }
+        setFrameRate(device, level == .serious || level == .critical ? 30 : 60)
+        device.unlockForConfiguration()
     }
 
     // MARK: focus
@@ -274,7 +370,8 @@ final class Receiver: NSObject, ObservableObject {
             for d in devices where (try? d.lockForConfiguration()) != nil {
                 if d.isFocusPointOfInterestSupported { d.focusPointOfInterest = dp }
                 if d.isFocusModeSupported(.autoFocus) { d.focusMode = .autoFocus }
-                if d.isExposurePointOfInterestSupported { d.exposurePointOfInterest = dp; d.exposureMode = .continuousAutoExposure }
+                if d.isExposurePointOfInterestSupported { d.exposurePointOfInterest = dp }
+                if d.isExposureModeSupported(.continuousAutoExposure) { d.exposureMode = .continuousAutoExposure }
                 d.unlockForConfiguration()
             }
         }
@@ -320,7 +417,7 @@ final class Receiver: NSObject, ObservableObject {
                     self?.photoDelegates.removeAll { $0 === d }
                     if let data { done(data) }
                 }
-                if !wasRunning { self?.sessionQueue.async { if self?.uiMode == .sound { s.stopRunning() } } }
+                if !wasRunning { self?.sessionQueue.async { if self?.sessionMode == .sound { s.stopRunning() } } }
             }
             DispatchQueue.main.async { self.photoDelegates.append(del) }
             out.capturePhoto(with: settings, delegate: del)
@@ -422,9 +519,15 @@ final class Receiver: NSObject, ObservableObject {
         let st = acoustic.stats
         let gotFrame = st.frames != before
         let ok = st.slots > 0 ? Double(st.decoded) / Double(st.slots) : 0
-        let load = st.decoded > 0 ? Double(st.corrections) / Double(st.decoded) / Double(max(1, st.parity / 2)) : 1
-        if st.syncs != syncBefore { let n = st.syncs; DispatchQueue.main.async { self.heard = n } }
-        absorb(packets, found: gotFrame, ok: ok, load: load, level: peak)
+        if gotFrame, let li = st.level {
+            // ↑ when the measured channel would carry the next rate, ↓ when frames fail
+            let next = li + 1
+            soundHint = ok < 0.6 ? -1 : (next < Acoustic.levels.count && ok > 0.9 && st.capacity > Acoustic.capacityNeeded[next] + 0.2 ? 1 : 0)
+        }
+        // a heard sync counts as lock, so the ring stays green between frames (one every ~4 s)
+        let heardSync = st.syncs != syncBefore
+        if heardSync { let n = st.syncs; DispatchQueue.main.async { self.heard = n } }
+        absorb(packets, found: heardSync, ok: ok, load: 0, level: peak)
     }
 
     // MARK: shared ingest (ingestQueue)
@@ -436,10 +539,14 @@ final class Receiver: NSObject, ObservableObject {
         if useful > 0 { usefulTimes.append((now, useful)); lastUseful = now }
         if found {
             lastLock = now
+            if firstLock == nil { firstLock = now }
             okEMA = okEMA * 0.9 + ok * 0.1
             loadEMA = loadEMA * 0.9 + load * 0.1
         }
-        usefulTimes.removeAll { now - $0.0 > 1.0 }
+        // sound delivers a burst of packets every ~4 s frame, so its rate is averaged over
+        // several frames (and over the transfer so far, while it is younger than that)
+        let window = mode == .sound ? 13.0 : 1.0
+        usefulTimes.removeAll { now - $0.0 > window }
         if let done = transfer.takeResult() {
             usefulTimes.removeAll()
             DispatchQueue.main.async {
@@ -452,10 +559,12 @@ final class Receiver: NSObject, ObservableObject {
         if now - lastPublish < 0.1 { return }
         lastPublish = now
         let prog = transfer.progress
-        let r = Double(usefulTimes.reduce(0) { $0 + $1.1 } * Wire.symbolSize)
-        let isActive = now - lastUseful < (mode == .sound ? 4 : 1.5) && transfer.session != nil
-        let isLocked = now - lastLock < (mode == .sound ? 3 : 0.3)
-        let h = !isLocked ? 0 : (okEMA > 0.97 && loadEMA < 0.25 ? 1 : (okEMA < 0.6 ? -1 : 0))
+        let bytes = Double(usefulTimes.reduce(0) { $0 + $1.1 } * Wire.symbolSize)
+        let span = mode == .sound ? min(window, max(4.3, now - (firstLock ?? now))) : window
+        let r = bytes / span
+        let isActive = now - lastUseful < (mode == .sound ? 9 : 1.5) && transfer.session != nil
+        let isLocked = now - lastLock < (mode == .sound ? 6 : 0.3)
+        let h = !isLocked ? 0 : mode == .sound ? soundHint : (okEMA > 0.97 && loadEMA < 0.25 ? 1 : (okEMA < 0.6 ? -1 : 0))
         DispatchQueue.main.async {
             if self.received != nil { return }
             self.progress = prog
@@ -464,7 +573,7 @@ final class Receiver: NSObject, ObservableObject {
             self.locked = isLocked
             self.hint = h
             if let level { self.audioLevel = level }
-            if !self.manualFocus, let d = self.devices.first { self.lensPosition = d.lensPosition }
+            if !self.manualFocus, let d = self.focusDevice { self.lensPosition = d.lensPosition }
         }
     }
 }

@@ -80,16 +80,35 @@ struct SoundSender: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack { CloseButton(action: onClose); Spacer() }
-            Spacer()
+            Spacer(minLength: 12)
             ZStack {
-                Circle().fill(.white.opacity(0.06)).frame(width: 220, height: 220)
+                Circle().fill(.white.opacity(0.06)).frame(width: 180, height: 180)
                     .scaleEffect(pulse ? 1.08 : 0.92)
                 Image(systemName: "speaker.wave.3.fill")
-                    .font(.system(size: 64, weight: .medium))
+                    .font(.system(size: 54, weight: .medium))
                     .foregroundStyle(.white)
             }
             .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: pulse)
-            Spacer()
+            Spacer(minLength: 24).frame(maxHeight: 56)
+            controls
+                .frame(maxWidth: 440)
+            // keep the controls clear of the bottom edge
+            Spacer(minLength: 48)
+        }
+        .padding(.horizontal, 22)
+        .background(Color.black.ignoresSafeArea())
+        .environment(\.colorScheme, .dark)
+        .onAppear {
+            pulse = true
+            player.start(payload: payload, band: band, level: rate)
+        }
+        .onDisappear { player.stop() }
+        .onChange(of: bandRaw) { _, _ in player.set(band: band, level: rate) }
+        .onChange(of: level) { _, _ in player.set(band: band, level: rate) }
+    }
+
+    private var controls: some View {
+        VStack(spacing: 18) {
             HStack(spacing: 0) {
                 ForEach([(AcousticBand.audible, "ear"), (.full, "waveform"), (.ultrasonic, "dog")], id: \.0) { b, icon in
                     Button { bandRaw = b.rawValue } label: {
@@ -103,20 +122,15 @@ struct SoundSender: View {
             }
             .padding(4)
             .background(.white.opacity(0.06), in: Capsule())
-            .padding(.horizontal, 22)
-            IconSlider(value: Binding(get: { Double(rate) }, set: { level = Int($0) }),
-                       range: 0...Double(Acoustic.levels.count - 1), low: "tortoise", high: "hare")
-                .padding(.horizontal, 22)
-                .padding(.vertical, 14)
+            VStack(spacing: 6) {
+                IconSlider(value: Binding(get: { Double(rate) }, set: { level = Int($0) }),
+                           range: 0...Double(Acoustic.levels.count - 1), low: "tortoise", high: "hare")
+                Text(rateText(AcousticFrame.rate(band, rate)))
+                    .font(.system(size: 15, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.85))
+                    .contentTransition(.numericText())
+                    .animation(.default, value: rate)
+            }
         }
-        .background(Color.black.ignoresSafeArea())
-        .environment(\.colorScheme, .dark)
-        .onAppear {
-            pulse = true
-            player.start(payload: payload, band: band, level: rate)
-        }
-        .onDisappear { player.stop() }
-        .onChange(of: bandRaw) { _, _ in player.set(band: band, level: rate) }
-        .onChange(of: level) { _, _ in player.set(band: band, level: rate) }
     }
 }

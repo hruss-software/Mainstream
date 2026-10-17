@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		01D0EA0FC19CDC4EBE775693 /* Receiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2737BD60FEA1AE6E71615A1 /* Receiver.swift */; };
 		1D63C03631226449B6D724EA /* MainstreamCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1161A2EC758F60D375738F5D /* MainstreamCore */; };
+		5714063125C709A2E45CCFC4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1DE2204BBF4B7A2E9B2A3FC0 /* Assets.xcassets */; };
 		8DABE5ED2FB439C3924E54A5 /* Media.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6557C75EC56540FC9575FF6E /* Media.swift */; };
 		A82793B5E212D56FD857C093 /* MainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B1CEB87032F54DBD392DCFF /* MainApp.swift */; };
 		AD8295A88DDE9CA79F952051 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BFC6197D4E44E55D053465A /* ContentView.swift */; };
@@ -19,6 +20,7 @@
 /* Begin PBXFileReference section */
 		1B176F00CDD5345EAF9EC273 /* Sender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sender.swift; sourceTree = "<group>"; };
 		1BFC6197D4E44E55D053465A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		1DE2204BBF4B7A2E9B2A3FC0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4B1CEB87032F54DBD392DCFF /* MainApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainApp.swift; sourceTree = "<group>"; };
 		6557C75EC56540FC9575FF6E /* Media.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Media.swift; sourceTree = "<group>"; };
 		A7127BC53FC4F7E934116884 /* Mainstream.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Mainstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -58,6 +60,7 @@
 		A718875ED9250CECDF037AE1 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				1DE2204BBF4B7A2E9B2A3FC0 /* Assets.xcassets */,
 				1BFC6197D4E44E55D053465A /* ContentView.swift */,
 				4B1CEB87032F54DBD392DCFF /* MainApp.swift */,
 				6557C75EC56540FC9575FF6E /* Media.swift */,
@@ -85,6 +88,7 @@
 			buildConfigurationList = 5DCAB7A73F82403B58DEEBD3 /* Build configuration list for PBXNativeTarget "Mainstream" */;
 			buildPhases = (
 				EF20B077C39C8710EABDE6D0 /* Sources */,
+				137ABC4D6096FE67A19C7BFF /* Resources */,
 				D4FFB5C5862FC171D1F7A1A1 /* Frameworks */,
 			);
 			buildRules = (
@@ -134,6 +138,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		137ABC4D6096FE67A19C7BFF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5714063125C709A2E45CCFC4 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		EF20B077C39C8710EABDE6D0 /* Sources */ = {

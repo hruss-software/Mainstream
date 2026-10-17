@@ -128,7 +128,7 @@ if let rxPath = env["CHANNEL"] {
     }
     exit(0)
 }
-// Genie comparison: received differential phases vs the transmitted symbols, frame by frame.
+// Genie comparison: a recording's decisions against what was sent, frame by frame.
 if let pair = env["GENIE"] {
     let parts = pair.split(separator: ",").map(String.init)
     func frames(_ path: String) -> [AcousticStats] {
@@ -146,54 +146,49 @@ if let pair = env["GENIE"] {
     }
     let tx = frames(parts[0]), rxf = frames(parts[1])
     guard let b = tx.first?.band, let li = tx.first?.level else { exit(1) }
-    let K = (0..<b.carriers.count).filter { $0 % 8 != 0 }.count, M = 1 << Acoustic.levels[li].bits
-    let unit = M == 2 ? Float.pi : 2 * Float.pi / Float(M)
-    func wrap(_ a: Float) -> Float { var v = a; while v > .pi { v -= 2 * .pi }; while v < -.pi { v += 2 * .pi }; return v }
-    // frames are identical every frame? no: match by symbol-decision agreement
+    let K = (0..<b.carriers.count).filter { $0 % 8 != 0 }.count
+    let con = Constellation(bits: Acoustic.levels[li].bits)
+    let binsAll = Array(b.carriers), dataBins = binsAll.indices.filter { $0 % 8 != 0 }.map { binsAll[$0] }
+    func kHz(_ j: Int) -> Double { Double(dataBins[j]) * Acoustic.sampleRate / Double(Acoustic.N) / 1000 }
     for (fi, r) in rxf.prefix(Int(env["GENIEFRAMES"] ?? "4")!).enumerated() {
+        // frames carry different packets: match by decision agreement
         var bestT = 0, bestAgree = -1
         for (ti, t) in tx.enumerated() where t.lastIdx.count == r.lastIdx.count {
             let agree = zip(t.lastIdx, r.lastIdx).filter { $0 == $1 }.count
             if agree > bestAgree { bestAgree = agree; bestT = ti }
         }
         let t = tx[bestT]
-        let total = r.lastIdx.count
-        var errsRaw = [Float](), errsCorr = [Float]()
-        for q in 0..<total {
-            errsCorr.append(wrap(r.lastTheta[q] - Float(t.lastIdx[q]) * unit))
-            errsRaw.append(wrap(r.lastRaw[q] - Float(t.lastIdx[q]) * unit))
-        }
-        func stats(_ e: [Float]) -> String {
-            let m = e.map { abs($0) }.reduce(0, +) / Float(e.count)
-            let wrong = e.filter { abs($0) > unit / 2 }.count
-            return String(format: "mean|err| %.2f rad, symbol errors %.1f%%", m, 100 * Float(wrong) / Float(e.count))
-        }
-        let coh = zip(t.lastIdx, r.lastIdx).filter { $0 != $1 }.count
-        let symsPerCarrier = total / K
+        let total = r.lastIdx.count, syms = total / K
         var early = 0, late = 0, nE = 0, nL = 0
-        for q in 0..<total { let isEarly = q / K < symsPerCarrier / 2; if t.lastIdx[q] != r.lastIdx[q] { if isEarly { early += 1 } else { late += 1 } }; if isEarly { nE += 1 } else { nL += 1 } }
-        print(String(format: "rx frame %d ↔ tx frame %d: coherent step errors %.1f%% (first half %.1f%%, second half %.1f%%) | differential %@", fi, bestT,
-                     100 * Double(coh) / Double(total), 100 * Double(early) / Double(max(1, nE)), 100 * Double(late) / Double(max(1, nL)), stats(errsRaw)))
-        // coherent decision errors by carrier decile
-        let syms = total / K
-        var line = "  coherent errors by carrier decile:"
-        let binsAll = Array(b.carriers), dataBins = binsAll.indices.filter { $0 % 8 != 0 }.map { binsAll[$0] }
+        for q in 0..<total {
+            let isEarly = q / K < syms / 2
+            if t.lastIdx[q] != r.lastIdx[q] { if isEarly { early += 1 } else { late += 1 } }
+            if isEarly { nE += 1 } else { nL += 1 }
+        }
+        print(String(format: "rx frame %d ↔ tx frame %d: symbol errors %.1f%% (first half %.1f%%, second half %.1f%%)", fi, bestT,
+                     100 * Double(early + late) / Double(total), 100 * Double(early) / Double(max(1, nE)), 100 * Double(late) / Double(max(1, nL))))
+        var line = "  symbol errors by carrier decile:"
         for d in 0..<10 {
             let lo = d * K / 10, hi = (d + 1) * K / 10
             var e = 0, n = 0
             for s in 0..<syms { for k in lo..<hi { if t.lastIdx[s * K + k] != r.lastIdx[s * K + k] { e += 1 }; n += 1 } }
-            line += String(format: " %.1fk:%.0f%%", Double(dataBins[lo]) * Acoustic.sampleRate / Double(Acoustic.N) / 1000, 100 * Double(e) / Double(max(1, n)))
+            line += String(format: " %.1fk:%.0f%%", kHz(lo), 100 * Double(e) / Double(max(1, n)))
         }
         print(line)
-        // residual phase of the corrected symbols against the true ones, by carrier group:
-        // a coherent offset means a wrong channel estimate, low coherence means noise
-        let cOff: Float = M == 4 ? .pi / 4 : 0
+        // residual of the equalised symbols against the true points: a coherent angle means a
+        // wrong channel estimate, low coherence means noise
         var line2 = "  residual angle[coherence] by carrier group:"
         for d in 0..<20 {
             let lo = d * K / 20, hi = (d + 1) * K / 20
             var sr: Float = 0, si: Float = 0, n = 0
-            for s in 0..<syms { for k in lo..<hi { let e = r.lastTheta[s * K + k] - Float(t.lastIdx[s * K + k]) * unit - cOff; sr += cos(e); si += sin(e); n += 1 } }
-            line2 += String(format: " %.1fk:%+.2f[%.2f]", Double(dataBins[lo]) * Acoustic.sampleRate / Double(Acoustic.N) / 1000, atan2(si, sr), sqrt(sr * sr + si * si) / Float(max(1, n)))
+            for s in 0..<syms {
+                for k in lo..<hi {
+                    let q = s * K + k, (pr, pi) = con.point(t.lastIdx[q]), yr = r.lastY[2 * q], yi = r.lastY[2 * q + 1]
+                    let e = atan2(yi * pr - yr * pi, yr * pr + yi * pi)
+                    sr += cos(e); si += sin(e); n += 1
+                }
+            }
+            line2 += String(format: " %.1fk:%+.2f[%.2f]", kHz(lo), atan2(si, sr), sqrt(sr * sr + si * si) / Float(max(1, n)))
         }
         print(line2)
     }
@@ -428,9 +423,9 @@ func acousticSim(band: AcousticBand, level: Int, room: RoomParams, bytes: Int) -
     let rx = AcousticReceiver()
     let td = TransferDecoder()
     var samples = [Float](repeating: 0, count: 3_000)   // leading silence
-    var total = 0, frames = 0, decoded = 0, slots = 0
+    var total = 0, frames = 0, decoded = 0, slots = 0, seenFrames = 0
     var r = room
-    while td.result == nil && frames < 400 {
+    while td.result == nil && frames < Int(env["MAXFRAMES"] ?? "400")! {
         samples += tx.nextFrame()
         r.seed = room.seed &+ UInt64(frames)
         let heard = Room.apply(samples, r)
@@ -445,7 +440,11 @@ func acousticSim(band: AcousticBand, level: Int, room: RoomParams, bytes: Int) -
             }
         }
         frames += 1
-        decoded += rx.stats.decoded; slots += rx.stats.slots
+        if rx.stats.frames != seenFrames {
+            seenFrames = rx.stats.frames
+            decoded += rx.stats.decoded; slots += rx.stats.slots
+            if env["CAPLOG"] != nil { print(String(format: "  caplog L%d cap %.2f ok %.2f", level, rx.stats.capacity, Double(rx.stats.decoded) / Double(max(1, rx.stats.slots)))) }
+        }
     }
     return (td.result?.data == data, Double(total) / Acoustic.sampleRate, frames, slots > 0 ? Double(decoded) / Double(slots) : 0)
 }

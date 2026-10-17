@@ -191,7 +191,8 @@ struct VisibleSender: View {
                            range: 1...6, low: "tortoise", high: "hare")
             }
             .padding(.horizontal, 22)
-            .padding(.vertical, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
         }
         .background(Color.white.ignoresSafeArea())
         .environment(\.colorScheme, .light)

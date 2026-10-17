@@ -38,18 +38,17 @@ struct ContentView: View {
                     .animation(.easeInOut(duration: 0.25), value: rx.locked)
             }
             Color.white.opacity(flash ? 0.8 : 0).ignoresSafeArea().allowsHitTesting(false)
-            if rx.active {
-                ReceiveGauge(progress: rx.progress, rate: rx.rate, hint: rx.hint)
-                    .transition(.opacity)
-            }
             VStack(spacing: 0) {
                 HStack(alignment: .top) {
                     ModePicker(mode: Binding(get: { mode }, set: { modeRaw = $0.rawValue }))
                     Spacer()
-                    if rx.dualActive && mode != .sound {
-                        PipPreview(layer: rx.pipPreview)
-                            .frame(width: 84, height: 112)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .trailing, spacing: 10) {
+                        ReceiveGauge(progress: rx.progress, rate: rx.rate, hint: rx.hint, active: rx.active)
+                        if rx.dualActive && mode != .sound {
+                            PipPreview(layer: rx.pipPreview)
+                                .frame(width: 84, height: 112)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -76,7 +75,6 @@ struct ContentView: View {
                 .padding(.bottom, 12)
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: rx.active)
         .preferredColorScheme(.dark)
         .onAppear {
             rx.setMultiCam(multiCam)
@@ -91,6 +89,8 @@ struct ContentView: View {
         }
         .onChange(of: modeRaw) { _, _ in rx.setMode(mode) }
         .onChange(of: multiCam) { _, on in rx.setMultiCam(on) }
+        // the receiver drops to one camera if the pair fails or overheats
+        .onChange(of: rx.multiCam) { _, on in if !on && multiCam { multiCam = false } }
         .onChange(of: outgoing?.id) { _, id in if id != nil { rx.stop() } }
         .onChange(of: photo) { _, item in
             guard let item else { return }
@@ -269,34 +269,50 @@ enum Brightness {
     }
 }
 
+/// Bytes per second as a short label: 820 B/s, 2.4 kB/s, 1.3 MB/s.
+func rateText(_ bps: Double) -> String {
+    if bps < 999.5 { return "\(Int(bps.rounded())) B/s" }
+    if bps < 999_500 { return String(format: bps < 9_950 ? "%.1f kB/s" : "%.0f kB/s", bps / 1000) }
+    return String(format: "%.1f MB/s", bps / 1_000_000)
+}
+
+/// Always-visible receive status: progress ring with percentage, live rate, and a chevron when a
+/// faster (↑) or slower (↓) setting on the sender would do better.
 struct ReceiveGauge: View {
     let progress: Double
     let rate: Double
     let hint: Int
+    let active: Bool
 
     var body: some View {
-        VStack(spacing: 10) {
+        HStack(spacing: 10) {
             ZStack {
-                Circle().stroke(.white.opacity(0.2), lineWidth: 5)
+                Circle().stroke(.white.opacity(0.2), lineWidth: 3.5)
                 Circle()
-                    .trim(from: 0, to: max(0.005, progress))
-                    .stroke(.white, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .trim(from: 0, to: max(0.002, progress))
+                    .stroke(.white, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .animation(.linear(duration: 0.1), value: progress)
+                    .animation(.linear(duration: 0.15), value: progress)
+                Text("\(Int((progress * 100).rounded(.down)))")
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
             }
-            .frame(width: 64, height: 64)
-            HStack(spacing: 4) {
-                if hint != 0 {
-                    Image(systemName: hint > 0 ? "chevron.up" : "chevron.down")
-                        .font(.caption2.weight(.bold))
-                }
-                Text(ByteCountFormatter.string(fromByteCount: Int64(rate), countStyle: .file) + "/s")
-                    .font(.caption.monospacedDigit())
+            .frame(width: 30, height: 30)
+            HStack(spacing: 3) {
+                Text(rateText(rate))
+                    .font(.system(size: 13, weight: .medium).monospacedDigit())
+                    .frame(minWidth: 62, alignment: .leading)
+                Image(systemName: hint > 0 ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(hint > 0 ? .green : .orange)
+                    .opacity(hint == 0 ? 0 : 1)
             }
-            .foregroundStyle(.white.opacity(0.85))
         }
-        .padding(16)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
+        .foregroundStyle(.white.opacity(active ? 0.95 : 0.6))
+        .padding(.leading, 6)
+        .padding(.trailing, 12)
+        .frame(height: 42)
+        .background(.ultraThinMaterial, in: Capsule())
+        .animation(.easeInOut(duration: 0.25), value: active)
     }
 }
 
