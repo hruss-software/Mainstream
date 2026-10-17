@@ -1,6 +1,6 @@
 import SwiftUI
 import AVFoundation
-import PhotonCore
+import LinkCore
 
 struct TextComposer: View {
     let onSend: (String) -> Void

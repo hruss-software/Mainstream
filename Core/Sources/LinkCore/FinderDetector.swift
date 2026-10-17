@@ -5,6 +5,7 @@ struct FinderCandidate {
     var y: Double
     var module: Double
     var count: Int
+    var inverted = false
 }
 
 /// QR-style 1:1:3:1:1 finder detection on a small luma image.
@@ -21,6 +22,10 @@ final class FinderDetector {
         lum = [UInt8](repeating: 0, count: w * h)
         bin = [UInt8](repeating: 0, count: w * h)
         integral = [UInt32](repeating: 0, count: (w + 1) * (h + 1))
+    }
+
+    func invert() {
+        lum.withUnsafeMutableBufferPointer { L in for i in 0..<L.count { L[i] = 255 &- L[i] } }
     }
 
     func binarize() {
@@ -156,6 +161,41 @@ final class FinderDetector {
 
     /// Picks four candidates forming a convex quad; returns them clockwise (image coords).
     static func selectQuad(_ all: [FinderCandidate]) -> [FinderCandidate]? {
+        if let q = selectFour(all) { return q }
+        return selectThree(all)
+    }
+
+    /// Three finders with similar size; the fourth corner is predicted as a parallelogram
+    /// (the alignment markers absorb the perspective error).
+    static func selectThree(_ all: [FinderCandidate]) -> [FinderCandidate]? {
+        let a = Array(all.filter { $0.count >= 3 }.sorted { $0.count > $1.count }.prefix(6))
+        guard a.count >= 3 else { return nil }
+        var best: [FinderCandidate]? = nil
+        var bestScore = -1.0
+        for i in 0..<a.count { for j in (i + 1)..<a.count { for k in (j + 1)..<a.count {
+            let t = [a[i], a[j], a[k]]
+            let ms = t.map(\.module)
+            guard let mn = ms.min(), let mx = ms.max(), mx < mn * 1.5 else { continue }
+            let avgM = ms.reduce(0, +) / 3
+            // the corner opposite the missing one has the largest angle (~90°)
+            for mid in 0..<3 {
+                let p = t[(mid + 1) % 3], q = t[(mid + 2) % 3], c = t[mid]
+                let ux = p.x - c.x, uy = p.y - c.y, vx = q.x - c.x, vy = q.y - c.y
+                let lu = hypot(ux, uy), lv = hypot(vx, vy)
+                guard lu > avgM * 12, lv > avgM * 12 else { continue }
+                let cosA = (ux * vx + uy * vy) / (lu * lv)
+                guard abs(cosA) < 0.35 else { continue }
+                var miss = FinderCandidate(x: p.x + q.x - c.x, y: p.y + q.y - c.y, module: avgM, count: 0)
+                miss.inverted = (lu < lv ? p : q).inverted
+                guard let ordered = clockwise(t + [miss]) else { continue }
+                let score = Double(t.reduce(0) { $0 + $1.count }) * (1 - abs(cosA))
+                if score > bestScore { bestScore = score; best = ordered }
+            }
+        } } }
+        return best
+    }
+
+    static func selectFour(_ all: [FinderCandidate]) -> [FinderCandidate]? {
         let c = all.filter { $0.count >= 2 }.sorted { $0.count > $1.count }.prefix(10)
         let a = Array(c)
         guard a.count >= 4 else { return nil }

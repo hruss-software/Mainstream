@@ -1,32 +1,33 @@
-name: Photon
+name: App
 options:
-  bundleIdPrefix: com.photon
+  bundleIdPrefix: com.local
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
 packages:
-  PhotonCore:
-    path: PhotonCore
+  LinkCore:
+    path: Core
 targets:
-  Photon:
+  App:
     type: application
     platform: iOS
     sources:
-      - App
+      - Sources
     dependencies:
-      - package: PhotonCore
-        product: PhotonCore
+      - package: LinkCore
+        product: LinkCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.photon.link
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        PRODUCT_NAME: App
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.opticallink
+        MARKETING_VERSION: "2.0"
+        CURRENT_PROJECT_VERSION: "2"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Photon
-        INFOPLIST_KEY_NSCameraUsageDescription: Receives data shown on another screen.
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: Records audio to send.
+        INFOPLIST_KEY_CFBundleDisplayName: " "
+        INFOPLIST_KEY_NSCameraUsageDescription: Receives data shown on another screen and takes photos to send.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Receives data sent as sound and records audio to send.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
@@ -35,10 +36,10 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
 schemes:
-  Photon:
+  App:
     build:
       targets:
-        Photon: all
+        App: all
     run:
       config: Release
     archive:

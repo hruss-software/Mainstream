@@ -1,6 +1,6 @@
 import AVFoundation
 import Combine
-import PhotonCore
+import LinkCore
 
 struct Received: Identifiable {
     let id = UUID()
@@ -18,8 +18,8 @@ final class Receiver: NSObject, ObservableObject, AVCaptureVideoDataOutputSample
     @Published var received: Received?
 
     let session = AVCaptureSession()
-    private let sessionQueue = DispatchQueue(label: "photon.session")
-    private let videoQueue = DispatchQueue(label: "photon.video", qos: .userInteractive)
+    private let sessionQueue = DispatchQueue(label: "link.session")
+    private let videoQueue = DispatchQueue(label: "link.video", qos: .userInteractive)
     private var configured = false
 
     // video-queue state

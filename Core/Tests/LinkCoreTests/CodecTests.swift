@@ -1,5 +1,5 @@
 import XCTest
-@testable import PhotonCore
+@testable import LinkCore
 
 final class CodecTests: XCTestCase {
     func testReedSolomonErrorsAndErasures() {
@@ -102,5 +102,53 @@ final class CodecTests: XCTestCase {
             frames += 1
         }
         XCTAssertEqual(dec.result?.data, Data(data))
+    }
+}
+
+final class ChannelTests: XCTestCase {
+    func testAcousticRoundTrip() {
+        var rng = SplitMix64(5)
+        let data = Data((0..<3000).map { _ in UInt8(truncatingIfNeeded: rng.next()) })
+        for band in AcousticBand.allCases {
+            let enc = TransferEncoder(payload: Payload(kind: .file, name: "s.bin", data: data))
+            let tx = AcousticTransmitter(encoder: enc, band: band, level: 1)
+            let rx = AcousticReceiver()
+            let td = TransferDecoder()
+            var room = RoomParams()
+            room.snrDB = 22
+            if band != .full { room.highCut = 22_000 }
+            var frames = 0
+            while td.result == nil && frames < 80 {
+                room.seed = UInt64(frames + 1)
+                let heard = Room.apply([Float](repeating: 0, count: 777) + tx.nextFrame(), room)
+                heard.withUnsafeBufferPointer { for p in rx.process($0) { td.ingest(p) } }
+                frames += 1
+            }
+            XCTAssertEqual(td.result?.data, data, "\(band)")
+        }
+    }
+
+    func testHiddenDemodulationRecoversCode() {
+        let li = Ladder.hiddenLevels.lowerBound + 2
+        guard let fit = Ladder.fit(level: li, width: 1146, height: 2172) else { return XCTFail() }
+        let L = FrameLayout.get(level: li, aspect: fit.aspect)
+        let enc = TransferEncoder(payload: Payload(kind: .text, name: "t", data: Data("hidden".utf8)))
+        let pat = Hidden.pattern(layout: L, frame: Renderer.frame(enc, layout: L), cellPx: fit.cellPx)
+        let comp = Hidden.complement(pat)
+        let demod = HiddenDemodulator()
+        let fd = FrameDecoder()
+        fd.bipolar = true
+        var p = ChannelParams()
+        p.geometrySeed = 4
+        var decoded = 0
+        for f in 0..<(Hidden.window * 2) {
+            let video = SyntheticVideo.frame(Double(f) / 60, width: 1206, height: 2622)
+            let shown = SyntheticVideo.embed(video, pattern: f % 2 == 0 ? pat : comp, alpha: 0.05)
+            p.seed = UInt64(f + 1)
+            let cam = Channel.capture(shown, p)
+            let ready = cam.withUnsafeBufferPointer { demod.push(BGRAFrame(base: $0.baseAddress!, width: p.camW, height: p.camH, bytesPerRow: p.camW * 4), time: Double(f) / 60) }
+            if ready { decoded = max(decoded, demod.withFrame { fd.decode($0).packets.count }) }
+        }
+        XCTAssertGreaterThan(decoded, L.slots / 2)
     }
 }

@@ -118,7 +118,9 @@ public final class TransferEncoder {
     /// Fills `slots` messages (each messageSize bytes, contiguous) for the next frame.
     func nextMessages(slots: Int, into buf: UnsafeMutablePointer<UInt8>) {
         let ms = Wire.messageSize
-        let metaSlot = slots > 0 ? frameIndex % slots : 0
+        // metadata in every frame when frames are large, less often when they carry few packets
+        let metaEvery = max(1, 12 / max(1, slots))
+        let metaSlot = frameIndex % metaEvery == 0 && slots > 0 ? (frameIndex / metaEvery) % slots : -1
         frameIndex += 1
         let plan = fountain.plan
         for s in 0..<slots {

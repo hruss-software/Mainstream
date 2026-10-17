@@ -14,6 +14,11 @@ public struct ChannelParams {
     public var pixelFill = 0.7       // lit fraction of each screen pixel (moiré)
     public var gain = 0.85
     public var seed: UInt64 = 1
+    /// Seed for placement; nil uses `seed`. Fixed across captures for a steady camera.
+    public var geometrySeed: UInt64? = nil
+    /// Per-capture hand shake in camera px.
+    public var shake = 0.0
+    public var offset = (0.0, 0.0)
     public init() {}
 }
 
@@ -39,8 +44,11 @@ public enum Channel {
     /// Each pixel shows frames[i]·(1-w) + frames[i+1]·w where (i, w) = mix(screenY01, cameraRow).
     public static func capture(frames: [RGBAImage], _ p: ChannelParams, mix: ((Double, Int) -> (Int, Float))?) -> [UInt8] {
         let screen = frames[0]
-        var rng = SplitMix64(p.seed)
+        var rng = SplitMix64(p.geometrySeed ?? p.seed)
         func rnd() -> Double { Double(rng.next() >> 11) / Double(1 << 53) * 2 - 1 }
+        var srng = SplitMix64(p.seed &* 31 &+ 7)
+        let shakeX = (Double(srng.next() >> 11) / Double(1 << 53) * 2 - 1) * p.shake
+        let shakeY = (Double(srng.next() >> 11) / Double(1 << 53) * 2 - 1) * p.shake
         let W = p.camW, H = p.camH
         let sw = Double(screen.width), sh = Double(screen.height)
         // screen rotated ~90° so its long side runs along camera x
@@ -51,7 +59,7 @@ public enum Channel {
         var dst: [Pt] = []
         for (u, v) in [(0.0, 0.0), (sw, 0.0), (sw, sh), (0.0, sh)] {
             let x = (u - sw / 2) * scale, y = (v - sh / 2) * scale
-            var X = cx + x * ca - y * sa, Y = cy + x * sa + y * ca
+            var X = cx + x * ca - y * sa + shakeX + p.offset.0, Y = cy + x * sa + y * ca + shakeY + p.offset.1
             X += rnd() * p.tilt * sw * scale; Y += rnd() * p.tilt * sw * scale
             dst.append(Pt(X, Y))
         }

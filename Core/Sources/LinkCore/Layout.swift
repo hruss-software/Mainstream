@@ -25,7 +25,14 @@ public enum Ladder {
         Level(cols: 256, bpc: 3, parity: 64, hold: 1),
         Level(cols: 288, bpc: 3, parity: 64, hold: 1),
         Level(cols: 320, bpc: 3, parity: 64, hold: 1),
+        // hidden-video levels (low-amplitude temporal modulation over a video)
+        Level(cols: 52,  bpc: 3, parity: 48, hold: 1),
+        Level(cols: 64,  bpc: 3, parity: 48, hold: 1),
+        Level(cols: 80,  bpc: 3, parity: 48, hold: 1),
+        Level(cols: 96,  bpc: 3, parity: 48, hold: 1),
     ]
+    public static let visibleCount = 15
+    public static let hiddenLevels = 15..<19
     public static var defaultIndex = 7
     /// rows / cols
     public static let aspects: [Double] = [1.0, 1.2, 1.35, 1.5, 1.65, 1.8, 1.95, 2.1]
@@ -74,7 +81,8 @@ public final class FrameLayout {
     static let headerS1 = 0.85
     static let headerBits = 24
     static let markerSpacing = 24.0
-    static let tile = 16
+    static let bandRows = 24
+    static let stripCols = 8
 
     private static var cache: [Int: FrameLayout] = [:]
     private static let lock = NSLock()
@@ -94,7 +102,7 @@ public final class FrameLayout {
         level = Ladder.levels[li]
         cols = level.cols
         rows = Int((Double(cols) * Ladder.aspects[ai]).rounded())
-        m = max(1, Int((Double(cols) / 56).rounded()))
+        m = max(Ladder.hiddenLevels.contains(li) && cols >= 74 ? 2 : 1, Int((Double(cols) / 56).rounded()))
         n = Wire.messageSize + level.parity
         rs = ReedSolomon(parity: level.parity)
 
@@ -159,14 +167,16 @@ public final class FrameLayout {
         self.markerAt = markerAt
         self.kind = kind
 
-        // Data order: tiles raster, cells raster within tile
+        // Data order: bands of `bandRows`, each walked as `stripCols`-wide vertical strips,
+        // raster inside a strip. A codeword then covers a roughly square patch, so tearing,
+        // glare or a polarity flip only touches the codewords it actually crosses.
         var order = [Int32]()
         order.reserveCapacity(cols * rows)
-        let T = FrameLayout.tile
-        for ty in stride(from: 0, to: rows, by: T) {
-            for tx in stride(from: 0, to: cols, by: T) {
-                for y in ty..<min(rows, ty + T) {
-                    for x in tx..<min(cols, tx + T) where kind[y * cols + x] == .data {
+        let BH = FrameLayout.bandRows, SW = FrameLayout.stripCols
+        for by in stride(from: 0, to: rows, by: BH) {
+            for sx in stride(from: 0, to: cols, by: SW) {
+                for y in by..<min(rows, by + BH) {
+                    for x in sx..<min(cols, sx + SW) where kind[y * cols + x] == .data {
                         order.append(Int32(y * cols + x))
                     }
                 }

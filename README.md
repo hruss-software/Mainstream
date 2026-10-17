@@ -11,7 +11,7 @@ Open `Photon.xcodeproj` (or run `xcodegen generate` after editing `project.yml`)
   - Swipe left or right to change the frame rate (60, 30, 20 fps and slower).
   - Your last choices are remembered.
 
-## How it works (`PhotonCore`)
+## How it works (`LinkCore`)
 | Layer | Choice |
 |---|---|
 | Fountain | Systematic random linear code over GF(2), blocks of ≤1024 × 180-byte symbols, online Gaussian elimination. Rateless, so dropped frames only cost time. Overhead is about 1–2%. |
@@ -22,6 +22,6 @@ Open `Photon.xcodeproj` (or run `xcodegen generate` after editing `project.yml`)
 | Camera | Highest-resolution 60 fps format (4K60 on recent iPhones), BGRA, exposure capped at 1/250 s with −0.7 EV, near-range autofocus, stabilisation off. |
 
 ## Rate tuning
-`swift run -c release PhotonSim` sweeps the ladder through a synthetic channel. The channel models perspective, blur, sub-pixel moiré, crosstalk, noise and vignetting. `TEMPORAL=1` adds display scan-out, rolling shutter and exposure blending. `DECODE=shot.png` decodes a screenshot of the sender.
+`swift run -c release LinkSim` sweeps the ladder through a synthetic channel. The channel models perspective, blur, sub-pixel moiré, crosstalk, noise and vignetting. `TEMPORAL=1` adds display scan-out, rolling shutter and exposure blending. `DECODE=shot.png` decodes a screenshot of the sender.
 
 In simulation, goodput rises with density until RS failures start to dominate, then falls off a cliff. Good conditions peak at level 12 and above (≈1–1.6 MB/s). Soft or distant conditions peak around levels 6–7 (≈300–400 kB/s). 60 fps frames beat 30 fps by 40–65% when the receiver processes 60 fps. The default is level 7 at 60 fps. The receiver's chevron tells you which way to move toward the crossover for your devices, distance and lighting.

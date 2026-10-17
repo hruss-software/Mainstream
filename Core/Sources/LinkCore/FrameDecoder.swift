@@ -48,6 +48,12 @@ public final class FrameDecoder {
     private var finder: FinderDetector? = nil
     private var lastRotation = 0
     public var concurrent = true
+    /// Decision-feedback cancellation of inter-cell blur.
+    public var equalize = true
+    /// Hidden-video mode: the code may appear inverted in places (tearing flips the
+    /// demodulated sign), so finders, markers and cells carry a local polarity.
+    public var bipolar = false
+    public var debug = false
 
     public init() {}
 
@@ -72,10 +78,21 @@ public final class FrameDecoder {
                 }
             }
         }
-        let cands = fd.detect()
+        var cands = fd.detect()
+        if bipolar {
+            fd.invert()
+            cands += fd.detect().map { var c = $0; c.inverted = true; return c }
+        }
+        if debug {
+            for c in cands.sorted(by: { $0.count > $1.count }).prefix(12) {
+                print(String(format: "cand %.0f,%.0f m %.1f n %d inv %d", c.x * Double(d), c.y * Double(d), c.module * Double(d), c.count, c.inverted ? 1 : 0))
+            }
+        }
         guard let quad = FinderDetector.selectQuad(cands) else { return ([], stats) }
+        if debug { print("quad", quad.map { "\(Int($0.x * Double(d))),\(Int($0.y * Double(d)))" }) }
         let pts = quad.map { Pt($0.x * Double(d), $0.y * Double(d)) }
         let modules = quad.map { $0.module * Double(d) }
+        let pols = quad.map { $0.inverted ? -1.0 : 1.0 }
 
         // 2. orientation + header
         let unit = [Pt(0, 0), Pt(1, 0), Pt(1, 1), Pt(0, 1)]
@@ -84,8 +101,9 @@ public final class FrameDecoder {
             let r = (lastRotation + t) % 4
             let c = (0..<4).map { pts[(r + $0) % 4] }
             let mods = (0..<4).map { modules[(r + $0) % 4] }
+            let pp = (0..<4).map { pols[(r + $0) % 4] }
             guard let H = Homography.from(unit, c) else { continue }
-            if let (lv, asp) = readHeader(f, H, corners: c, modules: mods) {
+            if let (lv, asp) = readHeader(f, H, corners: c, modules: mods, pols: pp) {
                 found = (H, lv, asp, r)
                 break
             }
@@ -107,7 +125,8 @@ public final class FrameDecoder {
         if cellPx < 1.4 { return ([], stats) }
 
         // 3. alignment refinement
-        let (dispX, dispY) = alignment(f, L, G, cellPx: cellPx, stats: &stats)
+        let cornerPol = (0..<4).map { pols[(rot + $0) % 4] }
+        let (dispX, dispY, polField) = alignment(f, L, G, cellPx: cellPx, cornerPol: cornerPol, stats: &stats)
 
         // 4. sample cells
         let C = L.level.bpc
@@ -160,8 +179,19 @@ public final class FrameDecoder {
 
         // 5. local normalisation
         normalise(&vals, L, C)
+        if bipolar {
+            for k in 0..<cells.count {
+                let c = Int(cells[k])
+                let x = c % L.cols, y = c / L.cols
+                let i = colIdx[x], j = rowIdx[y], fx = colF[x], fy = rowF[y]
+                let a = j * lw + i
+                let pv = (polField[a] * (1 - fx) + polField[a + 1] * fx) * (1 - fy) + (polField[a + lw] * (1 - fx) + polField[a + lw + 1] * fx) * fy
+                if pv < 0 { for ch in 0..<C { vals[c * C + ch] = -vals[c * C + ch] } }
+            }
+        }
         // 6. blind crosstalk correction
         if C > 1 { decorrelate(&vals, L, C) }
+        if equalize { equalise(&vals, L, C) }
 
         // 7. codewords
         var packets = [Packet?](repeating: nil, count: L.slots)
@@ -232,31 +262,41 @@ public final class FrameDecoder {
 
     // MARK: header
 
-    private func readHeader(_ f: BGRAFrame, _ H: Homography, corners c: [Pt], modules: [Double]) -> (Int, Int)? {
+    private func readHeader(_ f: BGRAFrame, _ H: Homography, corners c: [Pt], modules: [Double], pols: [Double]) -> (Int, Int)? {
         var black: Float = 0, white: Float = 0
         for i in 0..<4 {
             let p = c[i]
             let q = c[(i + 1) % 4], o = c[(i + 3) % 4]
-            black += f.luma(p.x, p.y)
+            let centre = f.luma(p.x, p.y)
+            var ring: Float = 0
             for nb in [q, o] {
                 let dx = nb.x - p.x, dy = nb.y - p.y
                 let l = hypot(dx, dy)
-                white += f.luma(p.x + dx / l * 2 * modules[i], p.y + dy / l * 2 * modules[i])
+                ring += f.luma(p.x + dx / l * 2 * modules[i], p.y + dy / l * 2 * modules[i]) / 2
             }
+            if pols[i] > 0 { black += centre; white += ring } else { black += ring; white += centre }
         }
-        black /= 4; white /= 8
+        black /= 4; white /= 4
         if white - black < 12 { return nil }
         let thr = (black + white) / 2
         let bw = (FrameLayout.headerS1 - FrameLayout.headerS0) / Double(FrameLayout.headerBits)
-        var bits = [Bool]()
+        var raw = [Bool]()   // true = dark
         for i in 0..<FrameLayout.headerBits {
             let s = FrameLayout.headerS0 + (Double(i) + 0.5) * bw
             let p = H.apply(s, 0)
             let q1 = H.apply(s - bw * 0.2, 0), q2 = H.apply(s + bw * 0.2, 0)
             let v = (2 * f.luma(p.x, p.y) + f.luma(q1.x, q1.y) + f.luma(q2.x, q2.y)) / 4
-            bits.append(v < thr)
+            raw.append(v < thr)
         }
-        return FrameLayout.parseHeader(bits)
+        if pols[0] == pols[1] {
+            return FrameLayout.parseHeader(raw.map { $0 == (pols[0] > 0) })
+        }
+        // a polarity flip crosses the header: try each split point (CRC-16 arbitrates)
+        for split in 0...FrameLayout.headerBits {
+            let bits = raw.enumerated().map { $0.element == ((($0.offset < split) ? pols[0] : pols[1]) > 0) }
+            if let h = FrameLayout.parseHeader(bits) { return h }
+        }
+        return nil
     }
 
     // MARK: alignment
@@ -271,18 +311,22 @@ public final class FrameDecoder {
         return t.map { ($0.0, $0.1, $0.2 - mean) }
     }()
 
-    private func alignment(_ f: BGRAFrame, _ L: FrameLayout, _ G: Homography, cellPx: Double, stats: inout FrameStats) -> ([Double], [Double]) {
+    private func alignment(_ f: BGRAFrame, _ L: FrameLayout, _ G: Homography, cellPx: Double, cornerPol: [Double],
+                           stats: inout FrameStats) -> ([Double], [Double], [Double]) {
         let lw = L.latX.count, lh = L.latY.count
         var dx = [Double](repeating: 0, count: lw * lh)
         var dy = [Double](repeating: 0, count: lw * lh)
+        var pol = [Double](repeating: 0, count: lw * lh)
         var valid = [Bool](repeating: false, count: lw * lh)
         for j in [0, lh - 1] { for i in [0, lw - 1] { valid[j * lw + i] = true } }
+        pol[0] = cornerPol[0]; pol[lw - 1] = cornerPol[1]; pol[lw * lh - 1] = cornerPol[2]; pol[(lh - 1) * lw] = cornerPol[3]
+        let bip = bipolar
         let tpl = FrameDecoder.template
         let tnorm = sqrt(tpl.reduce(Float(0)) { $0 + $1.2 * $1.2 })
         var idx: [Int] = []
         for a in 0..<(lw * lh) where L.markerAt[a] { idx.append(a) }
         stats.markersTotal = idx.count
-        var res = [(Double, Double, Bool)](repeating: (0, 0, false), count: idx.count)
+        var res = [(Double, Double, Bool, Double)](repeating: (0, 0, false, 1), count: idx.count)
         res.withUnsafeMutableBufferPointer { R in
             let rp = R.baseAddress!
             let work: (Int) -> Void = { q in
@@ -302,26 +346,28 @@ public final class FrameDecoder {
                     if varr <= 1e-3 { return -1 }
                     return s / (tnorm * sqrt(varr))
                 }
-                var best: Float = -2, bx = 0.0, by = 0.0
+                var best: Float = -2, bx = 0.0, by = 0.0, sign = 1.0
                 for yy in -4...4 { for xx in -4...4 {
-                    let sc = score(Double(xx) * 0.5, Double(yy) * 0.5)
-                    if sc > best { best = sc; bx = Double(xx) * 0.5; by = Double(yy) * 0.5 }
+                    let raw = score(Double(xx) * 0.5, Double(yy) * 0.5)
+                    let sc = bip ? abs(raw) : raw
+                    if sc > best { best = sc; bx = Double(xx) * 0.5; by = Double(yy) * 0.5; sign = raw < 0 ? -1 : 1 }
                 } }
                 let cx = bx, cy = by
                 for yy in -4...4 { for xx in -4...4 {
                     let ox = cx + Double(xx) * 0.125, oy = cy + Double(yy) * 0.125
-                    let sc = score(ox, oy)
-                    if sc > best { best = sc; bx = ox; by = oy }
+                    let raw = score(ox, oy)
+                    let sc = bip ? abs(raw) : raw
+                    if sc > best { best = sc; bx = ox; by = oy; sign = raw < 0 ? -1 : 1 }
                 } }
                 if best > 0.5 && abs(bx) < 2.2 && abs(by) < 2.2 {
-                    rp[q] = (J.0 * bx + J.1 * by, J.2 * bx + J.3 * by, true)
+                    rp[q] = (J.0 * bx + J.1 * by, J.2 * bx + J.3 * by, true, sign)
                 }
             }
             if concurrent { DispatchQueue.concurrentPerform(iterations: idx.count, execute: work) }
             else { for q in 0..<idx.count { work(q) } }
         }
         for (q, a) in idx.enumerated() where res[q].2 {
-            dx[a] = res[q].0; dy[a] = res[q].1; valid[a] = true
+            dx[a] = res[q].0; dy[a] = res[q].1; valid[a] = true; pol[a] = res[q].3
             stats.markersFound += 1
         }
         // outlier rejection against neighbour median-ish average
@@ -336,7 +382,7 @@ public final class FrameDecoder {
             }
             if k >= 2 && hypot(dx[a] - sx / k, dy[a] - sy / k) > 0.8 * cellPx { reject.append(a) }
         }
-        for a in reject { valid[a] = false; dx[a] = 0; dy[a] = 0; stats.markersFound -= 1 }
+        for a in reject { valid[a] = false; dx[a] = 0; dy[a] = 0; pol[a] = 0; stats.markersFound -= 1 }
         // fill holes by diffusion from valid neighbours
         for _ in 0..<(lw + lh) {
             var changed = false
@@ -352,7 +398,23 @@ public final class FrameDecoder {
             }
             if !changed { break }
         }
-        return (dx, dy)
+        // polarity: diffuse measured signs into gaps
+        var pv = pol.map { $0 != 0 }
+        for _ in 0..<(lw + lh) {
+            var changed = false
+            let v0 = pv
+            for a in 0..<(lw * lh) where !v0[a] {
+                let i = a % lw, j = a / lw
+                var sp = 0.0
+                for (ni, nj) in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)] where ni >= 0 && nj >= 0 && ni < lw && nj < lh {
+                    let b = nj * lw + ni
+                    if v0[b] { sp += pol[b] }
+                }
+                if sp != 0 { pol[a] = sp > 0 ? 1 : -1; pv[a] = true; changed = true }
+            }
+            if !changed { break }
+        }
+        return (dx, dy, pol)
     }
 
     // MARK: classification
@@ -394,6 +456,52 @@ public final class FrameDecoder {
                 let q = (s2[a * C + ch] + s2[b * C + ch] - s2[cc * C + ch] - s2[d * C + ch]) / n
                 let sd = sqrt(max(q - m * m, 1))
                 v[ci * C + ch] = (v[ci * C + ch] - m) / sd
+            }
+        }
+    }
+
+    /// Fits y ≈ a·s + b·Σ₄ s_nbr + c·Σ_diag s_nbr per channel on hard decisions, then removes the
+    /// neighbour terms. Two passes so improved decisions refine the estimate.
+    private func equalise(_ v: inout [Float], _ L: FrameLayout, _ C: Int) {
+        let W = L.cols, H = L.rows
+        let isData = L.kind.map { $0 == .data }
+        let cells = L.dataCells
+        for _ in 0..<2 {
+            var sgn = [Float](repeating: 0, count: W * H * C)
+            for c in cells { let ci = Int(c); for ch in 0..<C { sgn[ci * C + ch] = v[ci * C + ch] > 0 ? 1 : -1 } }
+            var n4 = [Float](repeating: 0, count: cells.count * C)
+            var nd = [Float](repeating: 0, count: cells.count * C)
+            for (k, c) in cells.enumerated() {
+                let ci = Int(c), x = ci % W, y = ci / W
+                for ch in 0..<C {
+                    var a: Float = 0, d: Float = 0
+                    if x > 0 && isData[ci - 1] { a += sgn[(ci - 1) * C + ch] }
+                    if x < W - 1 && isData[ci + 1] { a += sgn[(ci + 1) * C + ch] }
+                    if y > 0 && isData[ci - W] { a += sgn[(ci - W) * C + ch] }
+                    if y < H - 1 && isData[ci + W] { a += sgn[(ci + W) * C + ch] }
+                    if x > 0 && y > 0 && isData[ci - W - 1] { d += sgn[(ci - W - 1) * C + ch] }
+                    if x < W - 1 && y > 0 && isData[ci - W + 1] { d += sgn[(ci - W + 1) * C + ch] }
+                    if x > 0 && y < H - 1 && isData[ci + W - 1] { d += sgn[(ci + W - 1) * C + ch] }
+                    if x < W - 1 && y < H - 1 && isData[ci + W + 1] { d += sgn[(ci + W + 1) * C + ch] }
+                    n4[k * C + ch] = a; nd[k * C + ch] = d
+                }
+            }
+            for ch in 0..<C {
+                // normal equations for [s, n4, nd]
+                var M = [[Double]](repeating: [Double](repeating: 0, count: 4), count: 3)
+                for (k, c) in cells.enumerated() {
+                    let ci = Int(c)
+                    let f = [Double(sgn[ci * C + ch]), Double(n4[k * C + ch]), Double(nd[k * C + ch])]
+                    let y = Double(v[ci * C + ch])
+                    for i in 0..<3 { for j in 0..<3 { M[i][j] += f[i] * f[j] }; M[i][3] += f[i] * y }
+                }
+                guard let sol = solve(&M, 3), sol[0] > 0.05 else { continue }
+                let b = Float(sol[1]), cd = Float(sol[2]), a = Float(sol[0])
+                if abs(b) < 0.01 && abs(cd) < 0.01 { continue }
+                for (k, c) in cells.enumerated() {
+                    let i = Int(c) * C + ch
+                    v[i] = (v[i] - b * n4[k * C + ch] - cd * nd[k * C + ch]) / a
+                }
             }
         }
     }

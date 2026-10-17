@@ -1,6 +1,6 @@
 import SwiftUI
 import UIKit
-import PhotonCore
+import LinkCore
 
 /// Full-screen animated code. Swipe up/down: density. Swipe left/right: frame rate.
 final class SenderUIView: UIView {
@@ -10,7 +10,7 @@ final class SenderUIView: UIView {
     private let rateDots = UIStackView()
     private let indicators = UIStackView()
     private var link: CADisplayLink?
-    private let producer = DispatchQueue(label: "photon.render", qos: .userInteractive)
+    private let producer = DispatchQueue(label: "link.render", qos: .userInteractive)
     private let lock = NSLock()
     private var ready: [(gen: Int, image: CGImage)] = []
     private var generation = 0
