@@ -146,8 +146,11 @@ final class ChannelTests: XCTestCase {
             let shown = SyntheticVideo.embed(video, pattern: f % 2 == 0 ? pat : comp, alpha: 0.05)
             p.seed = UInt64(f + 1)
             let cam = Channel.capture(shown, p)
-            let ready = cam.withUnsafeBufferPointer { demod.push(BGRAFrame(base: $0.baseAddress!, width: p.camW, height: p.camH, bytesPerRow: p.camW * 4), time: Double(f) / 60) }
-            if ready { decoded = max(decoded, demod.withFrame { fd.decode($0).packets.count }) }
+            // every third capture is dropped, as on a busy phone
+            if f % 3 != 2 {
+                cam.withUnsafeBufferPointer { demod.push(BGRAFrame(base: $0.baseAddress!, width: p.camW, height: p.camH, bytesPerRow: p.camW * 4), time: Double(f) / 60) }
+            }
+            if let img = demod.render() { decoded = max(decoded, img.withFrame { fd.decode($0).packets.count }) }
         }
         XCTAssertGreaterThan(decoded, L.slots / 2)
     }

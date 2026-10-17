@@ -5,6 +5,12 @@ public struct RGBAImage {
     public var width: Int
     public var height: Int
     public var pixels: [UInt8]
+    public init(width: Int, height: Int, pixels: [UInt8]) {
+        self.width = width
+        self.height = height
+        self.pixels = pixels
+    }
+
     public init(width: Int, height: Int, fill: UInt8 = 255) {
         self.width = width
         self.height = height

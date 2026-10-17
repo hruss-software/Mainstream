@@ -33,7 +33,7 @@ struct ContentView: View {
             CameraPreview(layer: rx.preview) { rx.focus(atLayerPoint: $0) }
                 .ignoresSafeArea()
             if mode == .sound {
-                ListenView(level: rx.audioLevel, locked: rx.locked)
+                ListenView(level: rx.audioLevel, locked: rx.locked, heard: rx.heard, denied: rx.micDenied)
                     .ignoresSafeArea()
             } else {
                 Color.black.opacity(rx.locked ? 0 : 0.25)
@@ -50,7 +50,19 @@ struct ContentView: View {
                 HStack(alignment: .top) {
                     ModePicker(mode: Binding(get: { mode }, set: { modeRaw = $0.rawValue }))
                     Spacer()
-                    if rx.dualActive && mode != .sound {
+                    if mode == .hidden {
+                        // what the hidden-code demodulator sees: grey = nothing, code = signal
+                        Group {
+                            if let img = rx.hiddenPreview {
+                                Image(uiImage: img).resizable().interpolation(.none).scaledToFill()
+                            } else {
+                                Color.gray.opacity(0.25)
+                            }
+                        }
+                        .frame(width: 84, height: 150)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(rx.locked ? Color.green : .white.opacity(0.3), lineWidth: 1.5))
+                    } else if rx.dualActive && mode != .sound {
                         PipPreview(layer: rx.pipPreview)
                             .frame(width: 84, height: 112)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -243,22 +255,34 @@ struct CameraControls: View {
 struct ListenView: View {
     let level: Float
     let locked: Bool
+    let heard: Int
+    let denied: Bool
+    @State private var ping = true    // true = faded out; flashes on each detected sync
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.82)
+            Color.black
             ZStack {
-                Circle().stroke(.white.opacity(locked ? 0.5 : 0.15), lineWidth: 2)
+                // expands on each detected sync preamble
+                Circle().stroke(Color.green.opacity(ping ? 0 : 0.8), lineWidth: 3)
                     .frame(width: 160, height: 160)
-                    .scaleEffect(1 + CGFloat(min(1, level)) * 0.4)
+                    .scaleEffect(ping ? 1.6 : 1)
+                Circle().stroke(locked ? Color.green.opacity(0.7) : .white.opacity(0.18), lineWidth: 2)
+                    .frame(width: 160, height: 160)
+                    // mic level, log scale so quiet rooms still move it
+                    .scaleEffect(1 + CGFloat(max(0, min(1, (20 * log10(max(level, 1e-5)) + 60) / 60))) * 0.45)
                     .animation(.easeOut(duration: 0.1), value: level)
-                Image(systemName: "waveform")
+                Image(systemName: denied ? "mic.slash" : "waveform")
                     .font(.system(size: 44, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(denied ? .red : .white.opacity(0.85))
             }
             .offset(y: -120)
         }
         .allowsHitTesting(false)
+        .onChange(of: heard) { _, _ in
+            ping = false
+            withAnimation(.easeOut(duration: 0.6)) { ping = true }
+        }
     }
 }
 

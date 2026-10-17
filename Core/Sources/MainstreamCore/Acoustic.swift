@@ -21,7 +21,7 @@ public enum AcousticBand: Int, CaseIterable, Sendable {
         }
     }
 
-    var carriers: Range<Int> {
+    public var carriers: Range<Int> {
         let r = range
         return Int((r.lo / Acoustic.binHz).rounded(.up))..<(Int((r.hi / Acoustic.binHz).rounded(.down)) + 1)
     }
@@ -34,24 +34,39 @@ public struct AcousticLevel: Sendable {
 
 public enum Acoustic {
     public static let sampleRate = 48_000.0
-    static let N = 1024
-    static let CP = 256
+    /// FFT length and cyclic prefix (samples). The prefix must outlast the room's strong echoes.
+    public static var N = 2048
+    public static var CP = 1024
+    /// Diagnostic timing shift applied after sync (samples).
+    public static var timingShift = 0
     static let taper = 32
-    static let backoff = 64
+    /// Every 8th carrier is a known pilot, so each symbol's phase rotation (clock offset,
+    /// Doppler) is measured directly instead of from the receiver's own decisions.
+    static let pilotSpacing = 8
+    public static var usePilotRotation = true   // diagnostics
+    public static var debugPilots = false
+
+    static func pilotPhase(_ symbol: Int, _ i: Int) -> Float {
+        var r = SplitMix64(UInt64(symbol) &* 0x9E37 ^ UInt64(i) &* 0x85EB)
+        return Float(r.next() & 3) * .pi / 2
+    }
+    static var backoff: Int { CP / 8 }
     static let chirpLength = 4096
-    static let gap = 512
+    public static var gap = 2048   // lets the chirp's room echo die before the reference
     static let tail = 2048
     static var binHz: Double { sampleRate / Double(N) }
     static var symbolLength: Int { N + CP }
 
+    // Measured over a real speaker → microphone path, 2-phase is what survives typical
+    // phone speakers; 4- and 8-phase need a quiet room and close range.
     public static let levels: [AcousticLevel] = [
+        AcousticLevel(bits: 1, parity: 64),
         AcousticLevel(bits: 1, parity: 48),
+        AcousticLevel(bits: 2, parity: 64),
         AcousticLevel(bits: 2, parity: 48),
-        AcousticLevel(bits: 2, parity: 32),
-        AcousticLevel(bits: 3, parity: 48),
-        AcousticLevel(bits: 3, parity: 32),
+        AcousticLevel(bits: 3, parity: 64),
     ]
-    public static let defaultLevel = 2
+    public static let defaultLevel = 0
 
     static func chirp(_ band: AcousticBand) -> [Float] {
         let (lo, hi) = band.range
@@ -97,7 +112,10 @@ public enum Acoustic {
 public final class AcousticFrame {
     let band: AcousticBand
     let level: AcousticLevel
-    let K: Int
+    let K: Int                  // data carriers
+    let bins: [Int]             // all carriers (FFT bins)
+    let pilotPos: [Int]         // indices into `bins` carrying known pilots
+    let dataPos: [Int]          // indices into `bins` carrying data
     let n: Int
     let slots: Int
     let symbols: Int
@@ -120,10 +138,13 @@ public final class AcousticFrame {
     private init(_ band: AcousticBand, _ li: Int) {
         self.band = band
         level = Acoustic.levels[li]
-        K = band.carriers.count
+        bins = Array(band.carriers)
+        pilotPos = bins.indices.filter { $0 % Acoustic.pilotSpacing == 0 }
+        dataPos = bins.indices.filter { $0 % Acoustic.pilotSpacing != 0 }
+        K = dataPos.count
         n = Wire.messageSize + level.parity
         let b = level.bits
-        slots = max(2, (32 * K * b) / (8 * n))
+        slots = max(2, ((32 * 1024 / Acoustic.N) * K * b) / (8 * n))
         // each codeword byte sits on one carrier (8 consecutive bits of that carrier's stream),
         // so a weak carrier corrupts whole bytes the erasure decoder can drop
         let bytesPerCarrier = (slots * n + K - 1) / K
@@ -155,6 +176,8 @@ public final class AcousticFrame {
     }
 
     public static func rate(_ b: AcousticBand, _ l: Int) -> Double { get(b, l).payloadRate }
+    public static func sampleCountFor(_ b: AcousticBand, _ l: Int) -> Int { get(b, l).sampleCount }
+    public static func chirpTemplate(_ b: AcousticBand) -> [Float] { Acoustic.chirp(b) }
 
     var payloadRate: Double {
         Double(slots - 1) * Double(Wire.symbolSize) * Acoustic.sampleRate / Double(sampleCount)
@@ -232,22 +255,14 @@ public final class AcousticTransmitter {
         let chirp = Acoustic.chirp(band)
         for i in 0..<chirp.count { out[i] = chirp[i] * 0.5 }
         var pos = Acoustic.chirpLength + Acoustic.gap
-        var phase = Acoustic.referencePhases(band).map { $0 * (M >= 4 ? M / 4 : 1) }   // in units of 2π/M (or π for M=2)
-        let unit: Double
-        if M == 2 {
-            // BPSK reference uses QPSK phases mod 2 in π units
-            phase = Acoustic.referencePhases(band).map { $0 & 1 }
-            unit = Double.pi
-        } else {
-            unit = 2 * Double.pi / Double(M)
-        }
-        let carriers = Array(band.carriers)
-        func emit(_ ph: [Int]) {
+        let unit = M == 2 ? Float.pi : 2 * Float.pi / Float(M)
+        let bins = F.bins
+        func emit(_ ph: [Float]) {
             var re = [Float](repeating: 0, count: Acoustic.N), im = re
-            for (j, k) in carriers.enumerated() {
-                let a = Double(ph[j]) * unit
-                re[k] = Float(cos(a)); im[k] = Float(sin(a))
-                re[Acoustic.N - k] = Float(cos(a)); im[Acoustic.N - k] = -Float(sin(a))
+            for (j, k) in bins.enumerated() {
+                let a = ph[j]
+                re[k] = cos(a); im[k] = sin(a)
+                re[Acoustic.N - k] = cos(a); im[Acoustic.N - k] = -sin(a)
             }
             fft.transform(&re, &im, inverse: true)
             // RMS normalise to ~0.22, windowed overlap-add
@@ -264,19 +279,22 @@ public final class AcousticTransmitter {
             }
             pos += CP + Nn
         }
-        emit(phase)
-        // header: DBPSK on every carrier relative to the reference, repeated bit pattern
+        // reference (known QPSK phases on every carrier), then header as π flips of it
+        let ref = Acoustic.referencePhases(band).map { Float($0) * .pi / 2 }
+        emit(ref)
         let hdr = Acoustic.header(level: levelIndex, band: band)
-        let half = M == 2 ? 1 : M / 2
-        phase = phase.enumerated().map { (j, p) in (p + (hdr[j % 16] ? half : 0)) % M }
-        emit(phase)
+        emit(ref.enumerated().map { $0.element + (hdr[$0.offset % 16] ? .pi : 0) })
+        // data: phase steps from symbol to symbol on data carriers (decodable coherently or
+        // differentially), known phases on pilots
+        var ph = ref.enumerated().map { $0.element + (hdr[$0.offset % 16] ? Float.pi : 0) }
         for s in 0..<F.symbols {
-            for j in 0..<K {
+            for i in F.pilotPos { ph[i] = Acoustic.pilotPhase(s, i) }
+            for (j, i) in F.dataPos.enumerated() {
                 var v = 0
                 for q in 0..<b { v = v << 1 | Int(bits[(s * K + j) * b + q]) }
-                phase[j] = (phase[j] + inverseGray(v)) % M
+                ph[i] = (ph[i] + Float(inverseGray(v)) * unit).truncatingRemainder(dividingBy: 2 * .pi)
             }
-            emit(phase)
+            emit(ph)
         }
         for i in 0..<out.count { out[i] = max(-0.98, min(0.98, out[i])) }
         return out
@@ -300,11 +318,19 @@ public struct AcousticStats: Sendable {
     public var corrections = 0
     public var parity = 0
     public var lastPeak: Float = 0
+    public var syncs = 0
+    /// Diagnostics for the last frame: mean decision margin (1 = perfect, 0 = on the boundary)
+    public var carrierQuality: [Float] = []
+    public var symbolQuality: [Float] = []
+    /// Raw corrected differential phases and decisions of the last frame (diagnostics)
+    public var lastTheta: [Float] = []
+    public var lastRaw: [Float] = []
+    public var lastIdx: [Int] = []
 }
 
 public final class AcousticReceiver {
     public var bands: [AcousticBand] = AcousticBand.allCases
-    public var threshold: Float = 0.22
+    public var threshold: Float = 0.15
     public private(set) var stats = AcousticStats()
     private var buf: [Float] = []
     private var base = 0                 // absolute index of buf[0]
@@ -353,7 +379,8 @@ public final class AcousticReceiver {
                 if base + buf.count < lag + 256 + Acoustic.chirpLength { break }
                 let p = refine(band, lag)
                 stats.lastPeak = peak
-                pending = (band, p + Acoustic.chirpLength + Acoustic.gap)
+                stats.syncs += 1
+                pending = (band, p + Acoustic.chirpLength + Acoustic.gap + Acoustic.timingShift)
                 searchPos = p + Acoustic.chirpLength
             } else {
                 searchPos += hop
@@ -440,77 +467,218 @@ public final class AcousticReceiver {
         stats.parity = F.level.parity
         let b = F.level.bits, M = 1 << b
         let K = F.K
-        let carriers = Array(F.band.carriers)
         let unit = M == 2 ? Float.pi : 2 * Float.pi / Float(M)
         var bits = [UInt8](repeating: 0, count: F.symbols * K * b)
         var rel = [Float](repeating: 0, count: F.symbols * K * b)
-        var prev = spectrum(at: start + Acoustic.symbolLength)   // header symbol
-        let kc = Float(K - 1) / 2
-        for s in 0..<F.symbols {
-            let cur = spectrum(at: start + (s + 2) * Acoustic.symbolLength)
-            var th = [Float](repeating: 0, count: K), amp = th
-            for (j, k) in carriers.enumerated() {
-                let dr = cur.0[k] * prev.0[k] + cur.1[k] * prev.1[k]
-                let di = cur.1[k] * prev.0[k] - cur.0[k] * prev.1[k]
-                th[j] = atan2(di, dr)
-                amp[j] = sqrt(dr * dr + di * di)
-            }
-            // decision-directed removal of common phase + linear slope (clock offset, Doppler)
-            var idx = [Int](repeating: 0, count: K), err = th
-            for _ in 0..<3 {
-                var sw: Float = 0, se: Float = 0, sk: Float = 0, skk: Float = 0, ske: Float = 0
-                for j in 0..<K {
-                    let q = Int((th[j] / unit).rounded())
-                    idx[j] = ((q % M) + M) % M
-                    var e = th[j] - Float(q) * unit
-                    if e > Float.pi { e -= 2 * Float.pi } else if e < -Float.pi { e += 2 * Float.pi }
-                    err[j] = e
-                    let w = amp[j], x = Float(j) - kc
-                    sw += w; se += w * e; sk += w * x; skk += w * x * x; ske += w * x * e
-                }
-                if sw <= 0 { break }
-                let a = se / sw
-                let c = skk > 0 ? (ske - sk * a) / skk : 0
-                if abs(a) < 1e-4 && abs(c) < 1e-6 { break }
-                for j in 0..<K { th[j] -= a + c * (Float(j) - kc) }
-            }
-            var sorted = amp.sorted()
-            let med = max(1e-9, sorted[K / 2])
-            sorted.removeAll()
-            for j in 0..<K {
-                let v = idx[j] ^ (idx[j] >> 1)
-                let margin = max(0, 1 - abs(err[j]) / (unit / 2))
-                let r = margin * min(1, amp[j] / med)
-                for q in 0..<b {
-                    let p = (s * K + j) * b + q
-                    bits[p] = UInt8((v >> (b - 1 - q)) & 1)
-                    rel[p] = r
-                }
-            }
-            prev = cur
+        // Coherent detection with pilots. The channel on every carrier comes from the known
+        // reference and header symbols; each data symbol's rotation (clock offset, Doppler,
+        // movement) is measured on the pilots and removed before deciding.
+        let bins = F.bins
+        let nb = bins.count
+        let ref = spectrum(at: start), hdr = spectrum(at: start + Acoustic.symbolLength)
+        let refPh = Acoustic.referencePhases(F.band)
+        let hdrBits = Acoustic.header(level: li, band: F.band)
+        var h0r = [Float](repeating: 0, count: nb), h0i = h0r, hr = h0r, hi = h0r
+        for (i, k) in bins.enumerated() {
+            let a0 = Float(refPh[i]) * .pi / 2, a1 = a0 + (hdrBits[i % 16] ? .pi : 0)
+            h0r[i] = ref.0[k] * cos(a0) + ref.1[k] * sin(a0); h0i[i] = ref.1[k] * cos(a0) - ref.0[k] * sin(a0)
+            hr[i] = hdr.0[k] * cos(a1) + hdr.1[k] * sin(a1); hi[i] = hdr.1[k] * cos(a1) - hdr.0[k] * sin(a1)
         }
-        // codewords
+        func wrap(_ v: Float) -> Float { var e = v; while e > .pi { e -= 2 * .pi }; while e < -.pi { e += 2 * .pi }; return e }
+        let bc = Float(nb - 1) / 2
+        /// θ(x) = a + c·(x − bc) fitted circularly to phases d at positions x (uniform spacing dx).
+        func circularFit(_ d: [Float], _ w: [Float], _ x: [Int], _ dx: Float) -> (Float, Float) {
+            var sr: Float = 0, si: Float = 0
+            for j in 0..<(d.count - 1) {
+                let ww = w[j] * w[j + 1], dd = d[j + 1] - d[j]
+                sr += ww * cos(dd); si += ww * sin(dd)
+            }
+            let c = atan2(si, sr) / dx
+            var ar: Float = 0, ai: Float = 0
+            for j in 0..<d.count { let t = d[j] - c * (Float(x[j]) - bc); ar += w[j] * cos(t); ai += w[j] * sin(t) }
+            return (atan2(ai, ar), c)
+        }
+        var hmag = (0..<nb).map { sqrt(hr[$0] * hr[$0] + hi[$0] * hi[$0]) }
+        do {
+            // align the reference-symbol estimate to the header symbol, then average the two
+            let d = (0..<nb).map { atan2(hi[$0] * h0r[$0] - hr[$0] * h0i[$0], hr[$0] * h0r[$0] + hi[$0] * h0i[$0]) }
+            let (a0, c0) = circularFit(d, hmag, Array(0..<nb), 1)
+            for i in 0..<nb {
+                let t = a0 + c0 * (Float(i) - bc), cs = cos(t), sn = sin(t)
+                hr[i] = 0.5 * (hr[i] + h0r[i] * cs - h0i[i] * sn); hi[i] = 0.5 * (hi[i] + h0r[i] * sn + h0i[i] * cs)
+            }
+            hmag = (0..<nb).map { sqrt(hr[$0] * hr[$0] + hi[$0] * hi[$0]) }
+        }
+        var cq = [Float](repeating: 0, count: K), sq = [Float](repeating: 0, count: F.symbols)
+        var dTheta = [Float](), dRaw = [Float](), dIdx = [Int]()
+        var prevZ = hdr
+        let pw = F.pilotPos.map { hmag[$0] }
+        // Pass 1: pilot phases for every symbol. Clock offset makes the rotation grow as
+        // s·C·(bin − centre), so one slope C is fitted across the whole frame (grid search,
+        // robust to noisy pilots); each symbol then only needs a common phase a_s.
+        let spectra = (0..<F.symbols).map { spectrum(at: start + ($0 + 2) * Acoustic.symbolLength) }
+        var pd = [[Float]](repeating: [Float](repeating: 0, count: F.pilotPos.count), count: F.symbols)
+        for s in 0..<F.symbols {
+            let cur = spectra[s]
+            for (q, i) in F.pilotPos.enumerated() {
+                let k = bins[i], a = Acoustic.pilotPhase(s, i)
+                let zr = cur.0[k] * cos(a) + cur.1[k] * sin(a), zi = cur.1[k] * cos(a) - cur.0[k] * sin(a)
+                pd[s][q] = atan2(zi * hr[i] - zr * hi[i], zr * hr[i] + zi * hi[i])
+            }
+        }
+        let px = F.pilotPos.map { Float($0) - bc }
+        func coherence(_ C: Float) -> Float {
+            var tot: Float = 0
+            for s in 0..<F.symbols {
+                var sr: Float = 0, si: Float = 0
+                let k = Float(s + 1) * C
+                for q in 0..<px.count { let t = pd[s][q] - k * px[q]; sr += pw[q] * cos(t); si += pw[q] * sin(t) }
+                tot += sqrt(sr * sr + si * si)
+            }
+            return tot
+        }
+        // up to ±200 ppm: per-symbol slope 2π·ppm·L/N rad per bin
+        let cMax = Float(2 * Double.pi * 200e-6 * Double(Acoustic.symbolLength) / Double(Acoustic.N))
+        var bestC: Float = 0, bestV = coherence(0)
+        let steps = 60
+        for g in -steps...steps where g != 0 {
+            let C = cMax * Float(g) / Float(steps)
+            let v = coherence(C)
+            if v > bestV { bestV = v; bestC = C }
+        }
+        var slope = bestC
+        for _ in 0..<2 {  // local refine
+            let h = cMax / Float(steps) / 2
+            let l = coherence(slope - h), r = coherence(slope + h), m = coherence(slope)
+            let den = l - 2 * m + r
+            if den < 0 { slope += h * 0.5 * (l - r) / den }
+        }
+        if !Acoustic.usePilotRotation { slope = 0 }
+        // per-symbol rotation: frame-wide slope × symbol index + per-symbol common phase
+        var rotA = [Float](repeating: 0, count: F.symbols), rotC = rotA
+        for s in 0..<F.symbols {
+            var sr: Float = 0, si: Float = 0
+            let k = Float(s + 1) * slope
+            for q in 0..<px.count { let t = pd[s][q] - k * px[q]; sr += pw[q] * cos(t); si += pw[q] * sin(t) }
+            rotA[s] = Acoustic.usePilotRotation ? atan2(si, sr) : 0
+            rotC[s] = k
+            if Acoustic.debugPilots && s % 4 == 0 { print(String(format: "  sym %d common %+.2f slope %+.5f/bin", s, rotA[s], rotC[s])) }
+        }
+        // Iterative detection: decide every symbol, re-estimate each carrier's channel from the
+        // known symbols plus all confident decisions in the frame, then decide again.
+        let knownR = hr, knownI = hi
+        // data carriers step from the header's phase, so decisions are made relative to it
+        let off = (0..<nb).map { Float(refPh[$0]) * .pi / 2 + (hdrBits[$0 % 16] ? .pi : 0) }
+        var dec = [[Int]](repeating: [Int](repeating: 0, count: K), count: F.symbols)
+        var err = [[Float]](repeating: [Float](repeating: 0, count: K), count: F.symbols)
+        var phis = err
+        for pass in 0..<3 {
+            for s in 0..<F.symbols {
+                let cur = spectra[s]
+                for (j, i) in F.dataPos.enumerated() {
+                    let k = bins[i]
+                    let yr = cur.0[k] * hr[i] + cur.1[k] * hi[i], yi = cur.1[k] * hr[i] - cur.0[k] * hi[i]
+                    let phi = wrap(atan2(yi, yr) - rotA[s] - rotC[s] * (Float(i) - bc) - off[i])
+                    let q = Int((phi / unit).rounded())
+                    dec[s][j] = ((q % M) + M) % M
+                    err[s][j] = wrap(phi - Float(q) * unit)
+                    phis[s][j] = phi
+                    // within the first pass, refresh the channel as decisions arrive
+                    if pass == 0 && abs(err[s][j]) < unit / 4 {
+                        let ang = Float(dec[s][j]) * unit + off[i] + rotA[s] + rotC[s] * (Float(i) - bc)
+                        let zr = cur.0[k] * cos(ang) + cur.1[k] * sin(ang), zi = cur.1[k] * cos(ang) - cur.0[k] * sin(ang)
+                        hr[i] = 0.85 * hr[i] + 0.15 * zr; hi[i] = 0.85 * hi[i] + 0.15 * zi
+                    }
+                }
+            }
+            if pass == 2 { break }
+            // re-estimate the channel from everything known or confidently decided
+            var nr = knownR.map { $0 * 2 }, ni = knownI.map { $0 * 2 }, wsum = [Float](repeating: 2, count: nb)
+            for s in 0..<F.symbols {
+                let cur = spectra[s]
+                for i in F.pilotPos {
+                    let k = bins[i], ang = Acoustic.pilotPhase(s, i) + rotA[s] + rotC[s] * (Float(i) - bc)
+                    nr[i] += cur.0[k] * cos(ang) + cur.1[k] * sin(ang); ni[i] += cur.1[k] * cos(ang) - cur.0[k] * sin(ang); wsum[i] += 1
+                }
+                for (j, i) in F.dataPos.enumerated() {
+                    let w = max(0, 1 - abs(err[s][j]) / (unit / 2))
+                    if w < 0.3 { continue }
+                    let k = bins[i], ang = Float(dec[s][j]) * unit + off[i] + rotA[s] + rotC[s] * (Float(i) - bc)
+                    nr[i] += w * (cur.0[k] * cos(ang) + cur.1[k] * sin(ang)); ni[i] += w * (cur.1[k] * cos(ang) - cur.0[k] * sin(ang)); wsum[i] += w
+                }
+            }
+            for i in 0..<nb { hr[i] = nr[i] / wsum[i]; hi[i] = ni[i] / wsum[i] }
+            hmag = (0..<nb).map { sqrt(hr[$0] * hr[$0] + hi[$0] * hi[$0]) }
+        }
+        let hmed2 = max(1e-9, F.dataPos.map { hmag[$0] }.sorted()[K / 2])
+        // Two readings of every phase step: coherent (difference of absolute decisions) and
+        // differential (phase change between consecutive symbols, pilot rotation removed).
+        var bitsD = bits, relD = rel, cqD = cq
+        for s in 0..<F.symbols {
+            let cur = spectra[s]
+            for (j, i) in F.dataPos.enumerated() {
+                let k = bins[i]
+                // coherent
+                let c = dec[s][j], cPrev = s > 0 ? dec[s - 1][j] : 0
+                let delta = ((c - cPrev) % M + M) % M
+                let mC = max(0, 1 - abs(err[s][j]) / (unit / 2)), mP = s > 0 ? max(0, 1 - abs(err[s - 1][j]) / (unit / 2)) : 1
+                let v = delta ^ (delta >> 1)
+                cq[j] += mC / Float(F.symbols); sq[s] += mC / Float(K)
+                let r = min(mC, mP) * min(1, hmag[i] / hmed2)
+                // differential
+                let x = Float(i) - bc
+                let dRot = rotA[s] + rotC[s] * x - (s > 0 ? rotA[s - 1] + rotC[s - 1] * x : 0)
+                let dr = cur.0[k] * prevZ.0[k] + cur.1[k] * prevZ.1[k], di = cur.1[k] * prevZ.0[k] - cur.0[k] * prevZ.1[k]
+                let dth = wrap(atan2(di, dr) - dRot)
+                let qd = Int((dth / unit).rounded())
+                let dd = ((qd % M) + M) % M
+                let mD = max(0, 1 - abs(wrap(dth - Float(qd) * unit)) / (unit / 2))
+                let vd = dd ^ (dd >> 1)
+                cqD[j] += mD / Float(F.symbols)
+                for qq in 0..<b {
+                    let p = (s * K + j) * b + qq
+                    bits[p] = UInt8((v >> (b - 1 - qq)) & 1); rel[p] = r
+                    bitsD[p] = UInt8((vd >> (b - 1 - qq)) & 1); relD[p] = mD * min(1, hmag[i] / hmed2)
+                }
+                dIdx.append(delta); dTheta.append(phis[s][j]); dRaw.append(dth)
+            }
+            prevZ = cur
+        }
+        // weight each decision by how clean its carrier was across the whole frame, so bytes
+        // on weak carriers (speaker roll-off, noise, nulls) are the first to be erased
+        for s2 in 0..<F.symbols {
+            for j in 0..<K {
+                let w = cq[j] * cq[j], wd = cqD[j] * cqD[j]
+                for q in 0..<b { rel[(s2 * K + j) * b + q] *= w; relD[(s2 * K + j) * b + q] *= wd }
+            }
+        }
+        // codewords: coherent reading first, differential if that fails (CRC arbitrates)
         var packets: [Packet] = []
         let n = F.n
         var corrections = 0
         for slot in 0..<F.slots {
-            var cw = [UInt8](repeating: 0, count: n)
-            var crel = [Float](repeating: 0, count: n)
-            for i in 0..<n {
-                var byte: UInt8 = 0
-                var mr: Float = 1e9
-                for j in 0..<8 {
-                    let p = Int(F.perm[(slot * n + i) * 8 + j])
-                    byte = byte << 1 | bits[p]
-                    mr = min(mr, rel[p])
+            for (B, R) in [(bits, rel), (bitsD, relD)] {
+                var cw = [UInt8](repeating: 0, count: n)
+                var crel = [Float](repeating: 0, count: n)
+                for i in 0..<n {
+                    var byte: UInt8 = 0
+                    var mr: Float = 1e9
+                    for j in 0..<8 {
+                        let p = Int(F.perm[(slot * n + i) * 8 + j])
+                        byte = byte << 1 | B[p]
+                        mr = min(mr, R[p])
+                    }
+                    cw[i] = byte ^ F.scramble[slot * n + i]
+                    crel[i] = mr
                 }
-                cw[i] = byte ^ F.scramble[slot * n + i]
-                crel[i] = mr
+                if let (p, c) = decodeCodeword(cw, crel, F) { packets.append(p); corrections += c; break }
             }
-            if let (p, c) = decodeCodeword(cw, crel, F) { packets.append(p); corrections += c }
         }
         stats.decoded = packets.count
         stats.corrections = corrections
+        stats.carrierQuality = cq
+        stats.lastTheta = dTheta; stats.lastRaw = dRaw; stats.lastIdx = dIdx
+        stats.symbolQuality = sq
         return packets
     }
 

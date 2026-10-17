@@ -29,6 +29,12 @@ let payload = Payload(kind: .file, name: "r.bin", data: Data((0..<2_000_000).map
 let levelFilter: Set<Int>? = ProcessInfo.processInfo.environment["LEVELS"].map { Set($0.split(separator: ",").map { Int($0)! }) }
 
 let env = ProcessInfo.processInfo.environment
+if let n = env["ACN"] { Acoustic.N = Int(n)! }
+if let c = env["ACCP"] { Acoustic.CP = Int(c)! }
+if let t = env["TSHIFT"] { Acoustic.timingShift = Int(t)! }
+if env["NOPILOTROT"] != nil { Acoustic.usePilotRotation = false }
+if let g = env["ACGAP"] { Acoustic.gap = Int(g)! }
+if env["DEBUGPILOTS"] != nil { Acoustic.debugPilots = true }
 
 // Decode a screenshot of the sender: directly, and through the synthetic camera.
 if let path = env["DECODE"] {
@@ -59,12 +65,165 @@ if let path = env["DECODE"] {
     }
     exit(0)
 }
+// Write an acoustic transmission to a WAV file, or decode a recorded one.
+if let path = env["WAV"] {
+    let band = AcousticBand(rawValue: Int(env["BAND"] ?? "1")!)!
+    let li = Int(env["LEVEL"] ?? "\(Acoustic.defaultLevel)")!
+    let bytes = Int(env["BYTES"] ?? "4000")!
+    var r = SplitMix64Sim(77)
+    let data = Data((0..<bytes).map { _ in UInt8(truncatingIfNeeded: Int(r.unit() * 256)) })
+    try! data.write(to: URL(fileURLWithPath: path + ".payload"))
+    let tx = AcousticTransmitter(encoder: TransferEncoder(payload: Payload(kind: .file, name: "w.bin", data: data)), band: band, level: li)
+    var samples = [Float](repeating: 0, count: 24_000)
+    while Double(samples.count) / Acoustic.sampleRate < Double(env["SECONDS"] ?? "12")! { samples += tx.nextFrame() }
+    writeWAV(samples, path)
+    print("wrote \(samples.count) samples, band \(band) level \(li), nominal \(Int(tx.payloadRate)) B/s")
+    exit(0)
+}
+// Channel analysis: clock ratio from chirp positions, and echo envelope after the direct path.
+if let rxPath = env["CHANNEL"] {
+    let band = AcousticBand(rawValue: Int(env["BAND"] ?? "1")!)!
+    let x = readWAV(rxPath)
+    let c = AcousticFrame.chirpTemplate(band)
+    let cn = sqrt(c.reduce(0) { $0 + $1 * $1 })
+    func corr(_ at: Int) -> Float {
+        guard at >= 0, at + c.count <= x.count else { return 0 }
+        var a: Float = 0, e: Float = 0
+        for j in 0..<c.count { let v = x[at + j]; a += v * c[j]; e += v * v }
+        return a / (cn * sqrt(max(e, 1e-12)))
+    }
+    // coarse scan for chirps (step 8), then refine
+    var peaks: [(Int, Float)] = []
+    var i = 0
+    while i + c.count < x.count {
+        let v = corr(i)
+        if v > 0.12 {
+            var best = (i, v)
+            for l in max(0, i - 16)...(i + 400) { let w = corr(l); if w > best.1 { best = (l, w) } }
+            peaks.append(best)
+            i = best.0 + 40_000
+        } else { i += 8 }
+    }
+    print("chirps at:", peaks.map { String(format: "%d(%.2f)", $0.0, $0.1) }.joined(separator: " "))
+    let F = AcousticFrame.sampleCountFor(band, Int(env["LEVEL"] ?? "2")!)
+    print("expected spacing \(F) samples; observed:", zip(peaks.dropFirst(), peaks).map { $0.0 - $1.0 }.map(String.init).joined(separator: " "))
+    if let p0 = peaks.first {
+        // matched-filter output around the first chirp ≈ impulse response (chirp autocorrelation is narrow)
+        var env: [Float] = []
+        for d in stride(from: -200, to: 9600, by: 1) {
+            var a: Float = 0
+            let at = p0.0 + d
+            if at >= 0 && at + c.count <= x.count { for j in 0..<c.count { a += x[at + j] * c[j] } }
+            env.append(abs(a))
+        }
+        let peak = env.max() ?? 1
+        var line = "echo envelope (dB re direct) by delay:"
+        for (ms, w) in [(0, 0.5), (1, 1.0), (2, 1.0), (4, 2.0), (8, 4.0), (16, 8.0), (32, 16.0), (64, 32.0), (128, 64.0)] {
+            let a = 200 + Int(Double(ms) * 48), b = min(env.count, a + Int(w * 48))
+            let m = env[a..<b].max() ?? 0
+            line += String(format: " %dms:%.0f", ms, 20 * log10(max(m, 1e-9) / peak))
+        }
+        print(line)
+    }
+    exit(0)
+}
+// Genie comparison: received differential phases vs the transmitted symbols, frame by frame.
+if let pair = env["GENIE"] {
+    let parts = pair.split(separator: ",").map(String.init)
+    func frames(_ path: String) -> [AcousticStats] {
+        let x = readWAV(path)
+        let rx = AcousticReceiver()
+        var out: [AcousticStats] = []
+        var i = 0, seen = 0
+        while i < x.count {
+            let n = min(4800, x.count - i)
+            _ = x.withUnsafeBufferPointer { rx.process(UnsafeBufferPointer(rebasing: $0[i..<(i + n)])) }
+            if rx.stats.frames != seen { seen = rx.stats.frames; out.append(rx.stats) }
+            i += n
+        }
+        return out
+    }
+    let tx = frames(parts[0]), rxf = frames(parts[1])
+    guard let b = tx.first?.band, let li = tx.first?.level else { exit(1) }
+    let K = b.carriers.count, M = 1 << Acoustic.levels[li].bits
+    let unit = M == 2 ? Float.pi : 2 * Float.pi / Float(M)
+    func wrap(_ a: Float) -> Float { var v = a; while v > .pi { v -= 2 * .pi }; while v < -.pi { v += 2 * .pi }; return v }
+    // frames are identical every frame? no: match by symbol-decision agreement
+    for (fi, r) in rxf.prefix(4).enumerated() {
+        var bestT = 0, bestAgree = -1
+        for (ti, t) in tx.enumerated() where t.lastIdx.count == r.lastIdx.count {
+            let agree = zip(t.lastIdx, r.lastIdx).filter { $0 == $1 }.count
+            if agree > bestAgree { bestAgree = agree; bestT = ti }
+        }
+        let t = tx[bestT]
+        let total = r.lastIdx.count
+        var errsRaw = [Float](), errsCorr = [Float]()
+        for q in 0..<total {
+            errsCorr.append(wrap(r.lastTheta[q] - Float(t.lastIdx[q]) * unit))
+            errsRaw.append(wrap(r.lastRaw[q] - Float(t.lastIdx[q]) * unit))
+        }
+        func stats(_ e: [Float]) -> String {
+            let m = e.map { abs($0) }.reduce(0, +) / Float(e.count)
+            let wrong = e.filter { abs($0) > unit / 2 }.count
+            return String(format: "mean|err| %.2f rad, symbol errors %.1f%%", m, 100 * Float(wrong) / Float(e.count))
+        }
+        print("rx frame \(fi) ↔ tx frame \(bestT): raw \(stats(errsRaw)) | after slope fit \(stats(errsCorr))")
+        // per carrier-region mean error (bias) and spread, raw
+        let syms = total / K
+        var line = "  raw mean error by carrier decile:"
+        for d in 0..<10 {
+            let lo = d * K / 10, hi = (d + 1) * K / 10
+            var sx: Float = 0, sy: Float = 0, sa: Float = 0, n: Float = 0
+            for s in 0..<syms { for k in lo..<hi { let e = errsRaw[s * K + k]; sx += cos(e); sy += sin(e); sa += abs(e); n += 1 } }
+            line += String(format: " [%.1fk bias %+.2f |e| %.2f]", Double(b.carriers.lowerBound + lo) * Acoustic.sampleRate / Double(Acoustic.N) / 1000, atan2(sy, sx), sa / n)
+        }
+        print(line)
+    }
+    exit(0)
+}
+if let path = env["DECODEWAV"] {
+    let samples = readWAV(path)
+    let rx = AcousticReceiver()
+    let td = TransferDecoder()
+    var frames = 0, firstDone: Double? = nil
+    var i = 0
+    while i < samples.count {
+        let n = min(4800, samples.count - i)
+        let pk = samples.withUnsafeBufferPointer { rx.process(UnsafeBufferPointer(rebasing: $0[i..<(i + n)])) }
+        for p in pk { td.ingest(p) }
+        if rx.stats.frames != frames {
+            frames = rx.stats.frames
+            print(String(format: "t %5.1fs frame %d band %@ level %@ decoded %d/%d corr %d peak %.2f progress %.0f%%", Double(i) / 48000, frames,
+                         "\(rx.stats.band.map { "\($0)" } ?? "-")", "\(rx.stats.level ?? -1)", rx.stats.decoded, rx.stats.slots, rx.stats.corrections, rx.stats.lastPeak, td.progress * 100))
+            if env["DIAG"] != nil, let b = rx.stats.band {
+                let cq = rx.stats.carrierQuality, sq = rx.stats.symbolQuality
+                let lo = b.carriers.lowerBound
+                var line = "  quality by kHz:"
+                var k = 0
+                while k < cq.count {
+                    let e = min(cq.count, k + max(1, cq.count / 10))
+                    let q = cq[k..<e].reduce(0, +) / Float(e - k)
+                    line += String(format: " %.1fk:%.2f", Double(lo + k) * 46.875 / 1000, q)
+                    k = e
+                }
+                print(line)
+                print("  quality by symbol:", sq.enumerated().filter { $0.offset % 4 == 0 }.map { String(format: "%.2f", $0.element) }.joined(separator: " "))
+            }
+        }
+        if td.result != nil && firstDone == nil { firstDone = Double(i) / 48000 }
+        i += n
+    }
+    let expected = try? Data(contentsOf: URL(fileURLWithPath: env["PAYLOAD"] ?? ""))
+    print("result:", td.result == nil ? "incomplete" : (td.result?.data == expected ? "MATCH at \(firstDone!)s" : "decoded (no reference)"))
+    exit(0)
+}
 if env["AUDIO"] != nil {
     let bytes = Int(env["BYTES"] ?? "6000")!
     for snr in (env["SNRS"] ?? "30,20,12").split(separator: ",").map({ Double($0)! }) {
         print("== SNR \(snr) dB, clock 40 ppm, echoes + reverb, \(bytes) bytes")
-        for band in AcousticBand.allCases {
+        for band in AcousticBand.allCases where env["BANDS"] == nil || env["BANDS"]!.contains("\(band.rawValue)") {
             var room = RoomParams(); room.snrDB = snr
+            if let ppm = env["PPM"] { room.clockPPM = Double(ppm)! }
             if band != .full { room.highCut = 22_000 }
             for li in 0..<Acoustic.levels.count {
                 let lv = Acoustic.levels[li]
@@ -277,15 +436,17 @@ func hiddenSim(level li: Int, alpha: Double, cond c: Cond, duration: Double, see
             let s = Double(k + 1) * T + ys * T
             return (k - kmin, Float(max(0, min(1, (a + exposure - s) / exposure))))
         }
-        let ready = cam.withUnsafeBufferPointer { demod.push(BGRAFrame(base: $0.baseAddress!, width: camW, height: camH, bytesPerRow: camW * 4), time: tt) }
-        if ready && i % 2 == 0 {
-            let (pk, st) = demod.withFrame { fd.decode($0) }
+        // drop captures the way a busy phone does (alwaysDiscardsLateVideoFrames)
+        let dropP = Double(env["DROP"] ?? "0")!
+        if r.unit() >= dropP {
+            cam.withUnsafeBufferPointer { demod.push(BGRAFrame(base: $0.baseAddress!, width: camW, height: camH, bytesPerRow: camW * 4), time: tt) }
+        }
+        if i % 4 == 0, let img = demod.render() {
+            let (pk, st) = img.withFrame { fd.decode($0) }
             decodes += 1
             if st.found { found += 1; okSum += Double(st.decoded) / Double(max(1, st.slots)) }
             for q in pk where q.type == .data { seen.insert(q.block << 16 | q.id) }
-            if env["DUMP"] != nil && decodes == 3 {
-                demod.withFrame { f in writePNG(f, env["DUMP"]!) }
-            }
+            if env["DUMP"] != nil && decodes == 3 { img.withFrame { f in writePNG(f, env["DUMP"]!) } }
         }
         i += 1
         t += T
@@ -335,4 +496,31 @@ func acousticSim(band: AcousticBand, level: Int, room: RoomParams, bytes: Int) -
         decoded += rx.stats.decoded; slots += rx.stats.slots
     }
     return (td.result?.data == data, Double(total) / Acoustic.sampleRate, frames, slots > 0 ? Double(decoded) / Double(slots) : 0)
+}
+
+func writeWAV(_ x: [Float], _ path: String) {
+    var d = Data()
+    func u32(_ v: UInt32) { var v = v.littleEndian; d.append(Data(bytes: &v, count: 4)) }
+    func u16(_ v: UInt16) { var v = v.littleEndian; d.append(Data(bytes: &v, count: 2)) }
+    d.append("RIFF".data(using: .ascii)!); u32(UInt32(36 + x.count * 2)); d.append("WAVEfmt ".data(using: .ascii)!)
+    u32(16); u16(1); u16(1); u32(48000); u32(96000); u16(2); u16(16)
+    d.append("data".data(using: .ascii)!); u32(UInt32(x.count * 2))
+    for v in x { u16(UInt16(bitPattern: Int16(max(-1, min(1, v)) * 32767))) }
+    try! d.write(to: URL(fileURLWithPath: path))
+}
+
+func readWAV(_ path: String) -> [Float] {
+    let d = try! Data(contentsOf: URL(fileURLWithPath: path))
+    // find "data" chunk; expects 16-bit mono 48 kHz
+    var i = 12
+    while i + 8 <= d.count {
+        let id = String(data: d[i..<(i + 4)], encoding: .ascii)
+        let size = Int(d[i + 4]) | Int(d[i + 5]) << 8 | Int(d[i + 6]) << 16 | Int(d[i + 7]) << 24
+        if id == "data" {
+            let start = i + 8, n = min(size, d.count - start) / 2
+            return (0..<n).map { k in Float(Int16(bitPattern: UInt16(d[start + 2 * k]) | UInt16(d[start + 2 * k + 1]) << 8)) / 32768 }
+        }
+        i += 8 + size
+    }
+    return []
 }

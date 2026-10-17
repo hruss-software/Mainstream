@@ -38,17 +38,29 @@ public enum Hidden {
     }
 }
 
+/// A demodulated hidden-code image (BGRA, mid-grey = no signal).
+public struct DemodImage {
+    public let width: Int
+    public let height: Int
+    public var bgra: [UInt8]
+
+    public func withFrame<R>(_ body: (BGRAFrame) -> R) -> R {
+        bgra.withUnsafeBufferPointer { body(BGRAFrame(base: $0.baseAddress!, width: width, height: height, bytesPerRow: width * 4)) }
+    }
+}
+
+/// Recovers the hidden code from 60 fps captures. Frames are indexed by timestamp, so a
+/// dropped capture only removes one term: the output is mean(even frames) − mean(odd frames)
+/// over the last `window` refresh periods, which cancels the video for any mix of frames.
 public final class HiddenDemodulator {
     public let window: Int
     public private(set) var width = 0
     public private(set) var height = 0
     private var factor = 1
-    private var ring: [[Int16]] = []
-    private var S: [Int32] = []
-    private var cur: [Int16] = []
-    private var out: [UInt8] = []
-    private var count = 0
-    private var lastTime: Double? = nil
+    private var slots: [[Int16]] = []
+    private var slotIndex: [Int] = []
+    private var t0: Double? = nil
+    private var latest: Int? = nil
 
     public init(window: Int = Hidden.window) {
         precondition(window % 2 == 0)
@@ -56,30 +68,50 @@ public final class HiddenDemodulator {
     }
 
     public func reset() {
-        count = 0
-        lastTime = nil
-        for i in ring.indices { for j in ring[i].indices { ring[i][j] = 0 } }
-        for i in S.indices { S[i] = 0 }
+        t0 = nil
+        latest = nil
+        for i in slotIndex.indices { slotIndex[i] = Int.min }
     }
 
-    /// Pushes a capture; returns true once a full window has been accumulated.
-    @discardableResult
-    public func push(_ f: BGRAFrame, time: Double, frameInterval: Double = 1.0 / 60) -> Bool {
+    /// Frames of each parity currently inside the window.
+    private var counts: (Int, Int) {
+        guard let latest else { return (0, 0) }
+        var e = 0, o = 0
+        for idx in slotIndex where idx != Int.min && latest - idx < window {
+            if (latest - idx) & 1 == 0 { e += 1 } else { o += 1 }
+        }
+        return (e, o)
+    }
+
+    /// True when the window holds at least two captures of each parity.
+    public var ready: Bool { let (e, o) = counts; return e >= 2 && o >= 2 }
+
+    /// Stores a capture taken at `time` (seconds); `frameInterval` is the camera frame duration.
+    public func push(_ f: BGRAFrame, time: Double, frameInterval: Double = 1.0 / 60) {
         let fct = max(1, max(f.width, f.height) / 1280)
         let w = f.width / fct, h = f.height / fct
-        if w != width || h != height || fct != factor {
+        if w != width || h != height || fct != factor || slots.count != window {
             width = w; height = h; factor = fct
-            ring = [[Int16]](repeating: [Int16](repeating: 0, count: w * h * 3), count: window)
-            S = [Int32](repeating: 0, count: w * h * 3)
-            cur = [Int16](repeating: 0, count: w * h * 3)
-            out = [UInt8](repeating: 255, count: w * h * 4)
+            slots = [[Int16]](repeating: [Int16](repeating: 0, count: w * h * 3), count: window)
+            slotIndex = [Int](repeating: Int.min, count: window)
             reset()
         }
-        if let lt = lastTime, time - lt > frameInterval * 1.6 { reset() }
-        lastTime = time
+        if t0 == nil { t0 = time }
+        let n = Int(((time - t0!) / frameInterval).rounded())
+        if let l = latest {
+            if n == l { return }
+            // far behind the newest frame (clock jump): start over from this capture
+            if n <= l - window || n < 0 { reset(); t0 = time; latest = 0; storeSlot(0, f, fct, w, h); return }
+        }
+        latest = max(latest ?? n, n)
+        storeSlot(n, f, fct, w, h)
+    }
+
+    private func storeSlot(_ n: Int, _ f: BGRAFrame, _ fct: Int, _ w: Int, _ h: Int) {
+        let slot = ((n % window) + window) % window
+        slotIndex[slot] = n
         let half = fct / 2
-        // 1. downsample (2×2 average per sample) into `cur`
-        cur.withUnsafeMutableBufferPointer { C in
+        slots[slot].withUnsafeMutableBufferPointer { C in
             let cp = C.baseAddress!
             let bpr = f.bytesPerRow
             DispatchQueue.concurrentPerform(iterations: h) { y in
@@ -94,54 +126,70 @@ public final class HiddenDemodulator {
                 }
             }
         }
-        // 2. S_t = C_t − S_{t−1} − C_{t−W}
-        let slot = count % window
-        ring[slot].withUnsafeMutableBufferPointer { R in
-            S.withUnsafeMutableBufferPointer { Sp in
-                cur.withUnsafeBufferPointer { Cp in
-                    let rp = R.baseAddress!, sp = Sp.baseAddress!, cp = Cp.baseAddress!
-                    let n = w * h * 3
-                    let chunk = (n + 15) / 16
-                    DispatchQueue.concurrentPerform(iterations: 16) { k in
-                        for i in (k * chunk)..<min(n, (k + 1) * chunk) {
-                            sp[i] = Int32(cp[i]) - sp[i] - Int32(rp[i])
-                            rp[i] = cp[i]
-                        }
-                    }
+    }
+
+    /// Demodulated image of the current window, or nil until `ready`.
+    public func render() -> DemodImage? {
+        guard ready, let latest else { return nil }
+        var plus: [Int] = [], minus: [Int] = []
+        for (s, idx) in slotIndex.enumerated() where idx != Int.min && latest - idx < window {
+            if (latest - idx) & 1 == 0 { plus.append(s) } else { minus.append(s) }
+        }
+        let w = width, h = height, n = w * h * 3
+        var S = [Float](repeating: 0, count: n)
+        let ip = 1 / Float(plus.count), im = 1 / Float(minus.count)
+        // raw pointer tables: no Swift arrays touched inside the parallel loop
+        let np = plus.count, nm = minus.count
+        let tbl = UnsafeMutablePointer<UnsafePointer<Int16>>.allocate(capacity: np + nm)
+        defer { tbl.deallocate() }
+        withPointers(plus + minus) { all in for (k, p) in all.enumerated() { tbl[k] = p } }
+        // (slots are not mutated while rendering: push and render run on the same queue)
+        S.withUnsafeMutableBufferPointer { Sp in
+            let sp = Sp.baseAddress!
+            let chunk = (n + 63) / 64
+            DispatchQueue.concurrentPerform(iterations: 64) { k in
+                let lo = k * chunk, hi = min(n, (k + 1) * chunk)
+                if lo >= hi { return }
+                for i in lo..<hi {
+                    var a: Int32 = 0, b: Int32 = 0
+                    for q in 0..<np { a &+= Int32(tbl[q][i]) }
+                    for q in np..<(np + nm) { b &+= Int32(tbl[q][i]) }
+                    sp[i] = Float(a) * ip - Float(b) * im
                 }
             }
         }
-        count += 1
-        return count >= window
-    }
-
-    /// Renders the demodulated signal as a BGRA image centred on 128 and decodes it with `body`.
-    public func withFrame<R>(_ body: (BGRAFrame) -> R) -> R {
-        let src = S
+        // robust gain from the median |S| on a sparse grid
         var hist = [Int](repeating: 0, count: 1024)
-        var n = 0
-        src.withUnsafeBufferPointer { sp in
-            var i = 0
-            while i < sp.count { hist[min(1023, Int(abs(sp[i])))] += 1; n += 1; i += 3 * 7 }
-        }
-        var acc = 0, med = 1
-        for (v, c) in hist.enumerated() { acc += c; if acc * 2 >= n { med = max(1, v); break } }
-        let gain = Float(48) / Float(med)
-        let w = width, h = height
-        src.withUnsafeBufferPointer { sp in
+        var cnt = 0
+        var i = 0
+        while i < n { hist[min(1023, Int(abs(S[i]) * 4))] += 1; cnt += 1; i += 3 * 7 }
+        var acc = 0, med: Float = 1
+        for (v, c) in hist.enumerated() { acc += c; if acc * 2 >= cnt { med = max(1, Float(v)) / 4; break } }
+        let gain = 48 / med
+        var out = [UInt8](repeating: 255, count: w * h * 4)
+        S.withUnsafeBufferPointer { sp in
             out.withUnsafeMutableBufferPointer { op in
                 let s = sp.baseAddress!, o = op.baseAddress!
                 DispatchQueue.concurrentPerform(iterations: h) { y in
                     for x in 0..<w {
                         let i = (y * w + x) * 3, d = (y * w + x) * 4
-                        o[d] = UInt8(max(0, min(255, 128 + Float(s[i + 2]) * gain)))
-                        o[d + 1] = UInt8(max(0, min(255, 128 + Float(s[i + 1]) * gain)))
-                        o[d + 2] = UInt8(max(0, min(255, 128 + Float(s[i]) * gain)))
+                        o[d] = UInt8(max(0, min(255, 128 + s[i + 2] * gain)))
+                        o[d + 1] = UInt8(max(0, min(255, 128 + s[i + 1] * gain)))
+                        o[d + 2] = UInt8(max(0, min(255, 128 + s[i] * gain)))
                     }
                 }
             }
         }
-        return out.withUnsafeBufferPointer { body(BGRAFrame(base: $0.baseAddress!, width: w, height: h, bytesPerRow: w * 4)) }
+        return DemodImage(width: w, height: h, bgra: out)
+    }
+
+    private func withPointers<R>(_ idx: [Int], _ body: ([UnsafePointer<Int16>]) -> R) -> R {
+        var ptrs: [UnsafePointer<Int16>] = []
+        func rec(_ k: Int) -> R {
+            if k == idx.count { return body(ptrs) }
+            return slots[idx[k]].withUnsafeBufferPointer { b in ptrs.append(b.baseAddress!); return rec(k + 1) }
+        }
+        return rec(0)
     }
 }
 
