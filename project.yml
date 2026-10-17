@@ -1,4 +1,4 @@
-name: mainstream
+name: Mainstream
 options:
   bundleIdPrefix: com.local
   deploymentTarget:
@@ -8,7 +8,7 @@ packages:
   MainstreamCore:
     path: Core
 targets:
-  mainstream:
+  Mainstream:
     type: application
     platform: iOS
     sources:
@@ -18,14 +18,14 @@ targets:
         product: MainstreamCore
     settings:
       base:
-        PRODUCT_NAME: mainstream
+        PRODUCT_NAME: Mainstream
         PRODUCT_BUNDLE_IDENTIFIER: com.local.mainstream
         MARKETING_VERSION: "2.0"
         CURRENT_PROJECT_VERSION: "2"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: mainstream
+        INFOPLIST_KEY_CFBundleDisplayName: Mainstream
         INFOPLIST_KEY_NSCameraUsageDescription: Receives data shown on another screen and takes photos to send.
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Receives data sent as sound and records audio to send.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -36,10 +36,10 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
 schemes:
-  mainstream:
+  Mainstream:
     build:
       targets:
-        mainstream: all
+        Mainstream: all
     run:
       config: Release
     archive:

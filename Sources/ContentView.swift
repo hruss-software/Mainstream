@@ -8,7 +8,6 @@ struct Outgoing: Identifiable {
     let id = UUID()
     let payload: Payload
     let mode: LinkMode
-    var cover: URL? = nil
 }
 
 struct ContentView: View {
@@ -20,9 +19,6 @@ struct ContentView: View {
     @State private var recording = false
     @State private var importing = false
     @State private var photo: PhotosPickerItem?
-    @State private var awaitingCover: Payload?
-    @State private var coverPicker = false
-    @State private var cover: PhotosPickerItem?
     @State private var flash = false
     @Environment(\.scenePhase) private var phase
 
@@ -50,19 +46,7 @@ struct ContentView: View {
                 HStack(alignment: .top) {
                     ModePicker(mode: Binding(get: { mode }, set: { modeRaw = $0.rawValue }))
                     Spacer()
-                    if mode == .hidden {
-                        // what the hidden-code demodulator sees: grey = nothing, code = signal
-                        Group {
-                            if let img = rx.hiddenPreview {
-                                Image(uiImage: img).resizable().interpolation(.none).scaledToFill()
-                            } else {
-                                Color.gray.opacity(0.25)
-                            }
-                        }
-                        .frame(width: 84, height: 150)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(rx.locked ? Color.green : .white.opacity(0.3), lineWidth: 1.5))
-                    } else if rx.dualActive && mode != .sound {
+                    if rx.dualActive && mode != .sound {
                         PipPreview(layer: rx.pipPreview)
                             .frame(width: 84, height: 112)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -99,8 +83,7 @@ struct ContentView: View {
             rx.start(mode: mode)
             if let i = CommandLine.arguments.firstIndex(of: "-demoSend"), i + 1 < CommandLine.arguments.count {
                 let m = CommandLine.arguments.firstIndex(of: "-demoMode").map { LinkMode(rawValue: CommandLine.arguments[$0 + 1]) ?? .screen } ?? .screen
-                let cov = CommandLine.arguments.firstIndex(of: "-demoCover").map { URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) }
-                outgoing = Outgoing(payload: Payload(kind: .text, name: "text.txt", data: Data(CommandLine.arguments[i + 1].utf8)), mode: m, cover: cov)
+                outgoing = Outgoing(payload: Payload(kind: .text, name: "text.txt", data: Data(CommandLine.arguments[i + 1].utf8)), mode: m)
             }
         }
         .onChange(of: phase) { _, p in
@@ -117,17 +100,6 @@ struct ContentView: View {
                     send(Payload(kind: .image, name: "image.\(ext)", data: data))
                 }
                 photo = nil
-            }
-        }
-        .photosPicker(isPresented: $coverPicker, selection: $cover, matching: .videos)
-        .onChange(of: cover) { _, item in
-            guard let item, let p = awaitingCover else { return }
-            Task {
-                if let m = try? await item.loadTransferable(type: PickedMovie.self) {
-                    outgoing = Outgoing(payload: p, mode: .hidden, cover: m.url)
-                }
-                awaitingCover = nil
-                cover = nil
             }
         }
         .sheet(isPresented: $composing) {
@@ -155,7 +127,6 @@ struct ContentView: View {
                 switch o.mode {
                 case .screen: VisibleSender(payload: o.payload) { outgoing = nil }
                 case .sound: SoundSender(payload: o.payload) { outgoing = nil }
-                case .hidden: HiddenSender(payload: o.payload, video: o.cover!) { outgoing = nil }
                 }
             }
             .statusBarHidden()
@@ -188,12 +159,7 @@ struct ContentView: View {
     }
 
     private func send(_ p: Payload) {
-        if mode == .hidden {
-            awaitingCover = p
-            coverPicker = true
-        } else {
-            outgoing = Outgoing(payload: p, mode: mode)
-        }
+        outgoing = Outgoing(payload: p, mode: mode)
     }
 }
 
@@ -202,7 +168,7 @@ struct ModePicker: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            ForEach([(LinkMode.screen, "qrcode"), (.sound, "waveform"), (.hidden, "film")], id: \.0) { m, icon in
+            ForEach([(LinkMode.screen, "qrcode"), (.sound, "waveform")], id: \.0) { m, icon in
                 Button { mode = m } label: {
                     Image(systemName: icon)
                         .font(.system(size: 17, weight: .medium))

@@ -59,7 +59,7 @@ final class CodeView: UIView {
         let scale = traitCollection.displayScale
         let avail = bounds.insetBy(dx: 10, dy: 10)
         let wpx = Int(avail.width * scale), hpx = Int(avail.height * scale)
-        var li = min(level, Ladder.visibleCount - 1)
+        var li = min(level, Ladder.levels.count - 1)
         var fit = Ladder.fit(level: li, width: wpx, height: hpx)
         while fit == nil && li > 0 { li -= 1; fit = Ladder.fit(level: li, width: wpx, height: hpx) }
         guard let fit else { return }
@@ -185,7 +185,7 @@ struct VisibleSender: View {
             CodeViewRep(payload: payload, level: level, hold: hold)
             VStack(spacing: 6) {
                 IconSlider(value: Binding(get: { Double(level) }, set: { level = Int($0) }),
-                           range: 0...Double(Ladder.visibleCount - 1), low: "square.grid.2x2", high: "square.grid.4x3.fill")
+                           range: 0...Double(Ladder.levels.count - 1), low: "square.grid.2x2", high: "square.grid.4x3.fill")
                 // right = faster frames
                 IconSlider(value: Binding(get: { Double(7 - hold) }, set: { hold = 7 - Int($0) }),
                            range: 1...6, low: "tortoise", high: "hare")

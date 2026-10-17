@@ -1,14 +1,14 @@
 import Foundation
 import Accelerate
 
-// Acoustic modem: differential OFDM over speaker → microphone.
-// 48 kHz, 1024-point symbols with a 256-sample cyclic prefix and 32-sample windowed overlap
-// (no clicks, which matters in the near-ultrasonic band). Each frame:
-//   chirp preamble · gap · reference symbol · header symbol · D data symbols · tail silence
-// Data rides as phase differences between consecutive symbols on each carrier
-// (DBPSK / DQPSK / D8PSK, Gray coded), so no channel estimate is needed. Codeword bits are
-// spread over all carriers and symbols by a fixed permutation, and the same packets,
-// Reed–Solomon (with erasures) and fountain code as the visual link carry the payload.
+// Acoustic modem: coded OFDM over speaker → microphone.
+// 48 kHz, 2048-point symbols with a 1024-sample (21 ms) cyclic prefix that outlasts room
+// echoes. Each frame (about four seconds of data, so sync overhead stays small):
+//   chirp preamble · gap · reference symbol · header symbol · data symbols · short tail
+// Every 8th carrier is a known pilot used to track clock offset and drift. Data carriers carry
+// BPSK or QPSK. Reed–Solomon packets are concatenated, protected by a rate-1/2 or 3/4
+// convolutional code, spread over all carriers and symbols by an interleaver, and decoded with
+// soft-decision Viterbi where each carrier's bits are weighted by how noisy it was.
 
 public enum AcousticBand: Int, CaseIterable, Sendable {
     case audible = 0, full = 1, ultrasonic = 2
@@ -28,8 +28,9 @@ public enum AcousticBand: Int, CaseIterable, Sendable {
 }
 
 public struct AcousticLevel: Sendable {
-    public let bits: Int
-    public let parity: Int
+    public let bits: Int          // 1 = BPSK, 2 = QPSK
+    public let code: CodeRate
+    public let parity: Int        // Reed–Solomon parity bytes per packet
 }
 
 public enum Acoustic {
@@ -53,20 +54,20 @@ public enum Acoustic {
     static var backoff: Int { CP / 8 }
     static let chirpLength = 4096
     public static var gap = 2048   // lets the chirp's room echo die before the reference
-    static let tail = 2048
+    static let tail = 512
+    public static var frameSeconds = 4.0
     static var binHz: Double { sampleRate / Double(N) }
     static var symbolLength: Int { N + CP }
 
-    // Measured over a real speaker → microphone path, 2-phase is what survives typical
-    // phone speakers; 4- and 8-phase need a quiet room and close range.
+    // Ordered by speed. Tuned on a real speaker → microphone path: soft-decision convolutional
+    // coding is what makes QPSK usable on phone speakers.
     public static let levels: [AcousticLevel] = [
-        AcousticLevel(bits: 1, parity: 64),
-        AcousticLevel(bits: 1, parity: 48),
-        AcousticLevel(bits: 2, parity: 64),
-        AcousticLevel(bits: 2, parity: 48),
-        AcousticLevel(bits: 3, parity: 64),
+        AcousticLevel(bits: 1, code: .half, parity: 32),
+        AcousticLevel(bits: 2, code: .half, parity: 32),
+        AcousticLevel(bits: 2, code: .threeQuarters, parity: 32),
+        AcousticLevel(bits: 2, code: .none, parity: 48),
     ]
-    public static let defaultLevel = 0
+    public static let defaultLevel = 1
 
     static func chirp(_ band: AcousticBand) -> [Float] {
         let (lo, hi) = band.range
@@ -119,7 +120,8 @@ public final class AcousticFrame {
     let n: Int
     let slots: Int
     let symbols: Int
-    let perm: [Int32]           // codeword bit → frame bit position
+    let coded: Int              // coded bits per frame
+    let perm: [Int32]           // coded bit → frame bit position
     let scramble: [UInt8]
     let rs: ReedSolomon
 
@@ -144,27 +146,20 @@ public final class AcousticFrame {
         K = dataPos.count
         n = Wire.messageSize + level.parity
         let b = level.bits
-        slots = max(2, ((32 * 1024 / Acoustic.N) * K * b) / (8 * n))
-        // each codeword byte sits on one carrier (8 consecutive bits of that carrier's stream),
-        // so a weak carrier corrupts whole bytes the erasure decoder can drop
-        let bytesPerCarrier = (slots * n + K - 1) / K
-        symbols = (bytesPerCarrier * 8 + b - 1) / b
-        var places = [(Int, Int)]()
-        for j in 0..<K { for u in 0..<bytesPerCarrier { places.append((j, u)) } }
+        // about four seconds of data per frame, so the chirp/reference overhead stays small
+        let targetSymbols = Int(Acoustic.frameSeconds * Acoustic.sampleRate) / Acoustic.symbolLength
+        let capacity = Double(targetSymbols * K * b) * level.code.ratio
+        slots = max(2, Int(capacity) / (8 * n))
+        coded = level.code.codedLength(slots * n * 8)
+        symbols = (coded + K * b - 1) / (K * b)
+        // interleave coded bits over every carrier and symbol
         var r = SplitMix64(0xB17 ^ UInt64(band.rawValue * 16 + li))
-        for i in stride(from: places.count - 1, to: 0, by: -1) {
+        var p = (0..<(symbols * K * b)).map { Int32($0) }
+        for i in stride(from: p.count - 1, to: 0, by: -1) {
             let j = Int(r.next() % UInt64(i + 1))
-            places.swapAt(i, j)
+            p.swapAt(i, j)
         }
-        var p = [Int32](repeating: 0, count: slots * n * 8)
-        for c in 0..<(slots * n) {
-            let (j, u) = places[c]
-            for q in 0..<8 {
-                let t = 8 * u + q
-                p[c * 8 + q] = Int32(((t / b) * K + j) * b + t % b)
-            }
-        }
-        perm = p
+        perm = Array(p.prefix(coded))
         var sc = [UInt8](repeating: 0, count: slots * n)
         for i in 0..<sc.count { sc[i] = UInt8(truncatingIfNeeded: r.next()) }
         scramble = sc
@@ -226,15 +221,14 @@ public final class AcousticTransmitter {
     /// Next frame of mono samples at 48 kHz in [-1, 1].
     public func nextFrame() -> [Float] {
         let F = AcousticFrame.get(band, levelIndex)
-        let b = F.level.bits, M = 1 << b
+        let b = F.level.bits
         let K = F.K
         let n = F.n
-        // codewords → frame bits
+        // codewords → information bits → convolutional code → interleaved frame bits
         var msgs = [UInt8](repeating: 0, count: F.slots * Wire.messageSize)
         msgs.withUnsafeMutableBufferPointer { encoder.nextMessages(slots: F.slots, into: $0.baseAddress!) }
-        var bits = [UInt8](repeating: 0, count: F.symbols * K * b)
-        var r = SplitMix64(UInt64(encoder.session) ^ 0x51CE)
-        for i in 0..<bits.count { bits[i] = UInt8(r.next() & 1) }
+        var info = [UInt8]()
+        info.reserveCapacity(F.slots * n * 8)
         var cw = [UInt8](repeating: 0, count: n)
         for s in 0..<F.slots {
             msgs.withUnsafeBufferPointer { m in
@@ -245,17 +239,19 @@ public final class AcousticTransmitter {
             }
             for i in 0..<n {
                 let byte = cw[i] ^ F.scramble[s * n + i]
-                for j in 0..<8 {
-                    bits[Int(F.perm[(s * n + i) * 8 + j])] = (byte >> UInt8(7 - j)) & 1
-                }
+                for j in 0..<8 { info.append((byte >> UInt8(7 - j)) & 1) }
             }
         }
+        let codedBits = Convolutional.encode(info, rate: F.level.code)
+        var bits = [UInt8](repeating: 0, count: F.symbols * K * b)
+        var r = SplitMix64(UInt64(encoder.session) ^ 0x51CE)
+        for i in 0..<bits.count { bits[i] = UInt8(r.next() & 1) }
+        for (c, v) in codedBits.enumerated() { bits[Int(F.perm[c])] = v }
         // symbols
         var out = [Float](repeating: 0, count: F.sampleCount)
         let chirp = Acoustic.chirp(band)
         for i in 0..<chirp.count { out[i] = chirp[i] * 0.5 }
         var pos = Acoustic.chirpLength + Acoustic.gap
-        let unit = M == 2 ? Float.pi : 2 * Float.pi / Float(M)
         let bins = F.bins
         func emit(_ ph: [Float]) {
             var re = [Float](repeating: 0, count: Acoustic.N), im = re
@@ -284,15 +280,20 @@ public final class AcousticTransmitter {
         emit(ref)
         let hdr = Acoustic.header(level: levelIndex, band: band)
         emit(ref.enumerated().map { $0.element + (hdr[$0.offset % 16] ? .pi : 0) })
-        // data: phase steps from symbol to symbol on data carriers (decodable coherently or
-        // differentially), known phases on pilots
-        var ph = ref.enumerated().map { $0.element + (hdr[$0.offset % 16] ? Float.pi : 0) }
+        // data: BPSK (0/π) or Gray QPSK (±π/4, ±3π/4) relative to each carrier's header phase;
+        // known phases on the pilots
+        let off = ref.enumerated().map { $0.element + (hdr[$0.offset % 16] ? Float.pi : 0) }
+        var ph = off
         for s in 0..<F.symbols {
             for i in F.pilotPos { ph[i] = Acoustic.pilotPhase(s, i) }
             for (j, i) in F.dataPos.enumerated() {
-                var v = 0
-                for q in 0..<b { v = v << 1 | Int(bits[(s * K + j) * b + q]) }
-                ph[i] = (ph[i] + Float(inverseGray(v)) * unit).truncatingRemainder(dividingBy: 2 * .pi)
+                let p = (s * K + j) * b
+                if b == 1 {
+                    ph[i] = off[i] + (bits[p] == 1 ? .pi : 0)
+                } else {
+                    let I: Float = bits[p] == 1 ? -1 : 1, Q: Float = bits[p + 1] == 1 ? -1 : 1
+                    ph[i] = off[i] + atan2(Q, I)
+                }
             }
             emit(ph)
         }
@@ -301,11 +302,6 @@ public final class AcousticTransmitter {
     }
 }
 
-@inline(__always) func inverseGray(_ g: Int) -> Int {
-    var v = g, s = g >> 1
-    while s != 0 { v ^= s; s >>= 1 }
-    return v
-}
 
 // MARK: - receiver
 
@@ -322,7 +318,7 @@ public struct AcousticStats: Sendable {
     /// Diagnostics for the last frame: mean decision margin (1 = perfect, 0 = on the boundary)
     public var carrierQuality: [Float] = []
     public var symbolQuality: [Float] = []
-    /// Raw corrected differential phases and decisions of the last frame (diagnostics)
+    /// Corrected phases and constellation decisions of the last frame (diagnostics)
     public var lastTheta: [Float] = []
     public var lastRaw: [Float] = []
     public var lastIdx: [Int] = []
@@ -467,9 +463,9 @@ public final class AcousticReceiver {
         stats.parity = F.level.parity
         let b = F.level.bits, M = 1 << b
         let K = F.K
+        // constellation: BPSK at 0/π, QPSK at ±π/4, ±3π/4 (relative to each carrier's header phase)
         let unit = M == 2 ? Float.pi : 2 * Float.pi / Float(M)
-        var bits = [UInt8](repeating: 0, count: F.symbols * K * b)
-        var rel = [Float](repeating: 0, count: F.symbols * K * b)
+        let cOff: Float = M == 4 ? .pi / 4 : 0
         // Coherent detection with pilots. The channel on every carrier comes from the known
         // reference and header symbols; each data symbol's rotation (clock offset, Doppler,
         // movement) is measured on the pilots and removed before deciding.
@@ -511,7 +507,6 @@ public final class AcousticReceiver {
         }
         var cq = [Float](repeating: 0, count: K), sq = [Float](repeating: 0, count: F.symbols)
         var dTheta = [Float](), dRaw = [Float](), dIdx = [Int]()
-        var prevZ = hdr
         let pw = F.pilotPos.map { hmag[$0] }
         // Pass 1: pilot phases for every symbol. Clock offset makes the rotation grow as
         // s·C·(bin − centre), so one slope C is fitted across the whole frame (grid search,
@@ -565,114 +560,125 @@ public final class AcousticReceiver {
             if Acoustic.debugPilots && s % 4 == 0 { print(String(format: "  sym %d common %+.2f slope %+.5f/bin", s, rotA[s], rotC[s])) }
         }
         // Iterative detection: decide every symbol, re-estimate each carrier's channel from the
-        // known symbols plus all confident decisions in the frame, then decide again.
+        // known symbols, pilots and confident decisions within ±window symbols (frames are
+        // long, so the estimate follows a slowly changing channel), then decide again.
         let knownR = hr, knownI = hi
         // data carriers step from the header's phase, so decisions are made relative to it
         let off = (0..<nb).map { Float(refPh[$0]) * .pi / 2 + (hdrBits[$0 % 16] ? .pi : 0) }
-        var dec = [[Int]](repeating: [Int](repeating: 0, count: K), count: F.symbols)
-        var err = [[Float]](repeating: [Float](repeating: 0, count: K), count: F.symbols)
+        let S = F.symbols
+        var dec = [[Int]](repeating: [Int](repeating: 0, count: K), count: S)
+        var err = [[Float]](repeating: [Float](repeating: 0, count: K), count: S)
         var phis = err
+        var HR = [[Float]](repeating: hr, count: S), HI = [[Float]](repeating: hi, count: S)
+        let window = 10
         for pass in 0..<3 {
-            for s in 0..<F.symbols {
+            for s in 0..<S {
                 let cur = spectra[s]
+                if pass == 0 { HR[s] = hr; HI[s] = hi }
                 for (j, i) in F.dataPos.enumerated() {
                     let k = bins[i]
-                    let yr = cur.0[k] * hr[i] + cur.1[k] * hi[i], yi = cur.1[k] * hr[i] - cur.0[k] * hi[i]
+                    let gr = HR[s][i], gi = HI[s][i]
+                    let yr = cur.0[k] * gr + cur.1[k] * gi, yi = cur.1[k] * gr - cur.0[k] * gi
                     let phi = wrap(atan2(yi, yr) - rotA[s] - rotC[s] * (Float(i) - bc) - off[i])
-                    let q = Int((phi / unit).rounded())
+                    let q = Int(((phi - cOff) / unit).rounded())
                     dec[s][j] = ((q % M) + M) % M
-                    err[s][j] = wrap(phi - Float(q) * unit)
+                    err[s][j] = wrap(phi - cOff - Float(q) * unit)
                     phis[s][j] = phi
-                    // within the first pass, refresh the channel as decisions arrive
+                    // first pass: refresh the channel as decisions arrive
                     if pass == 0 && abs(err[s][j]) < unit / 4 {
-                        let ang = Float(dec[s][j]) * unit + off[i] + rotA[s] + rotC[s] * (Float(i) - bc)
+                        let ang = Float(dec[s][j]) * unit + cOff + off[i] + rotA[s] + rotC[s] * (Float(i) - bc)
                         let zr = cur.0[k] * cos(ang) + cur.1[k] * sin(ang), zi = cur.1[k] * cos(ang) - cur.0[k] * sin(ang)
                         hr[i] = 0.85 * hr[i] + 0.15 * zr; hi[i] = 0.85 * hi[i] + 0.15 * zi
                     }
                 }
             }
             if pass == 2 { break }
-            // re-estimate the channel from everything known or confidently decided
-            var nr = knownR.map { $0 * 2 }, ni = knownI.map { $0 * 2 }, wsum = [Float](repeating: 2, count: nb)
-            for s in 0..<F.symbols {
+            // per-symbol channel observations (pilots always, data when confident), then a
+            // sliding-window average via prefix sums
+            var cr = [[Float]](repeating: [Float](repeating: 0, count: nb), count: S + 1), ci = cr, cw = cr
+            for s in 0..<S {
                 let cur = spectra[s]
+                cr[s + 1] = cr[s]; ci[s + 1] = ci[s]; cw[s + 1] = cw[s]
                 for i in F.pilotPos {
                     let k = bins[i], ang = Acoustic.pilotPhase(s, i) + rotA[s] + rotC[s] * (Float(i) - bc)
-                    nr[i] += cur.0[k] * cos(ang) + cur.1[k] * sin(ang); ni[i] += cur.1[k] * cos(ang) - cur.0[k] * sin(ang); wsum[i] += 1
+                    cr[s + 1][i] += cur.0[k] * cos(ang) + cur.1[k] * sin(ang); ci[s + 1][i] += cur.1[k] * cos(ang) - cur.0[k] * sin(ang); cw[s + 1][i] += 1
                 }
                 for (j, i) in F.dataPos.enumerated() {
                     let w = max(0, 1 - abs(err[s][j]) / (unit / 2))
                     if w < 0.3 { continue }
-                    let k = bins[i], ang = Float(dec[s][j]) * unit + off[i] + rotA[s] + rotC[s] * (Float(i) - bc)
-                    nr[i] += w * (cur.0[k] * cos(ang) + cur.1[k] * sin(ang)); ni[i] += w * (cur.1[k] * cos(ang) - cur.0[k] * sin(ang)); wsum[i] += w
+                    let k = bins[i], ang = Float(dec[s][j]) * unit + cOff + off[i] + rotA[s] + rotC[s] * (Float(i) - bc)
+                    cr[s + 1][i] += w * (cur.0[k] * cos(ang) + cur.1[k] * sin(ang)); ci[s + 1][i] += w * (cur.1[k] * cos(ang) - cur.0[k] * sin(ang)); cw[s + 1][i] += w
                 }
             }
-            for i in 0..<nb { hr[i] = nr[i] / wsum[i]; hi[i] = ni[i] / wsum[i] }
-            hmag = (0..<nb).map { sqrt(hr[$0] * hr[$0] + hi[$0] * hi[$0]) }
+            for s in 0..<S {
+                let lo = max(0, s - window), hi2 = min(S, s + window + 1)
+                let known: Float = s < window ? 2 : 0      // reference + header symbols sit just before s = 0
+                for i in 0..<nb {
+                    let w = cw[hi2][i] - cw[lo][i] + known
+                    guard w > 0 else { continue }
+                    HR[s][i] = (cr[hi2][i] - cr[lo][i] + known * knownR[i]) / w
+                    HI[s][i] = (ci[hi2][i] - ci[lo][i] + known * knownI[i]) / w
+                }
+            }
         }
-        let hmed2 = max(1e-9, F.dataPos.map { hmag[$0] }.sorted()[K / 2])
-        // Two readings of every phase step: coherent (difference of absolute decisions) and
-        // differential (phase change between consecutive symbols, pilot rotation removed).
-        var bitsD = bits, relD = rel, cqD = cq
-        for s in 0..<F.symbols {
+        hmag = (0..<nb).map { i in
+            var m: Float = 0
+            for s in 0..<S { m += sqrt(HR[s][i] * HR[s][i] + HI[s][i] * HI[s][i]) }
+            return m / Float(S)
+        }
+        // Soft bits. y is the equalised, rotation-corrected symbol on the unit circle; each
+        // carrier's noise variance comes from its spread around the decided points, so weak
+        // carriers contribute little to the decoder.
+        var y = [[(Float, Float)]](repeating: [(Float, Float)](repeating: (0, 0), count: K), count: S)
+        var noise = [Float](repeating: 0, count: K)
+        for s in 0..<S {
             let cur = spectra[s]
             for (j, i) in F.dataPos.enumerated() {
                 let k = bins[i]
-                // coherent
-                let c = dec[s][j], cPrev = s > 0 ? dec[s - 1][j] : 0
-                let delta = ((c - cPrev) % M + M) % M
-                let mC = max(0, 1 - abs(err[s][j]) / (unit / 2)), mP = s > 0 ? max(0, 1 - abs(err[s - 1][j]) / (unit / 2)) : 1
-                let v = delta ^ (delta >> 1)
-                cq[j] += mC / Float(F.symbols); sq[s] += mC / Float(K)
-                let r = min(mC, mP) * min(1, hmag[i] / hmed2)
-                // differential
-                let x = Float(i) - bc
-                let dRot = rotA[s] + rotC[s] * x - (s > 0 ? rotA[s - 1] + rotC[s - 1] * x : 0)
-                let dr = cur.0[k] * prevZ.0[k] + cur.1[k] * prevZ.1[k], di = cur.1[k] * prevZ.0[k] - cur.0[k] * prevZ.1[k]
-                let dth = wrap(atan2(di, dr) - dRot)
-                let qd = Int((dth / unit).rounded())
-                let dd = ((qd % M) + M) % M
-                let mD = max(0, 1 - abs(wrap(dth - Float(qd) * unit)) / (unit / 2))
-                let vd = dd ^ (dd >> 1)
-                cqD[j] += mD / Float(F.symbols)
-                for qq in 0..<b {
-                    let p = (s * K + j) * b + qq
-                    bits[p] = UInt8((v >> (b - 1 - qq)) & 1); rel[p] = r
-                    bitsD[p] = UInt8((vd >> (b - 1 - qq)) & 1); relD[p] = mD * min(1, hmag[i] / hmed2)
-                }
-                dIdx.append(delta); dTheta.append(phis[s][j]); dRaw.append(dth)
+                let gr = HR[s][i], gi = HI[s][i], g2 = max(1e-12, gr * gr + gi * gi)
+                var yr = (cur.0[k] * gr + cur.1[k] * gi) / g2, yi = (cur.1[k] * gr - cur.0[k] * gi) / g2
+                let t = -(rotA[s] + rotC[s] * (Float(i) - bc) + off[i]), c0 = cos(t), s0 = sin(t)
+                (yr, yi) = (yr * c0 - yi * s0, yr * s0 + yi * c0)
+                y[s][j] = (yr, yi)
+                let xa = Float(dec[s][j]) * unit + cOff
+                let er = yr - cos(xa), ei = yi - sin(xa)
+                noise[j] += (er * er + ei * ei) / Float(S)
+                let margin = max(0, 1 - abs(err[s][j]) / (unit / 2))
+                cq[j] += margin / Float(S); sq[s] += margin / Float(K)
+                dIdx.append(dec[s][j]); dTheta.append(phis[s][j]); dRaw.append(0)
             }
-            prevZ = cur
         }
-        // weight each decision by how clean its carrier was across the whole frame, so bytes
-        // on weak carriers (speaker roll-off, noise, nulls) are the first to be erased
-        for s2 in 0..<F.symbols {
+        var llr = [Float](repeating: 0, count: S * K * b)
+        for s in 0..<S {
             for j in 0..<K {
-                let w = cq[j] * cq[j], wd = cqD[j] * cqD[j]
-                for q in 0..<b { rel[(s2 * K + j) * b + q] *= w; relD[(s2 * K + j) * b + q] *= wd }
+                let w = 2 / max(0.02, noise[j])
+                let (yr, yi) = y[s][j]
+                let p = (s * K + j) * b
+                if b == 1 { llr[p] = w * yr } else { llr[p] = w * yr * 1.4142135; llr[p + 1] = w * yi * 1.4142135 }
             }
         }
-        // codewords: coherent reading first, differential if that fails (CRC arbitrates)
-        var packets: [Packet] = []
+        // de-interleave, decode the convolutional code, then the Reed–Solomon packets
+        let codedLLR = F.perm.map { llr[Int($0)] }
         let n = F.n
+        let info = Convolutional.decode(codedLLR, info: F.slots * n * 8, rate: F.level.code)
+        let infoRel: [Float] = F.level.code == .none ? codedLLR.map { abs($0) } : []
+        var packets: [Packet] = []
         var corrections = 0
         for slot in 0..<F.slots {
-            for (B, R) in [(bits, rel), (bitsD, relD)] {
-                var cw = [UInt8](repeating: 0, count: n)
-                var crel = [Float](repeating: 0, count: n)
-                for i in 0..<n {
-                    var byte: UInt8 = 0
-                    var mr: Float = 1e9
-                    for j in 0..<8 {
-                        let p = Int(F.perm[(slot * n + i) * 8 + j])
-                        byte = byte << 1 | B[p]
-                        mr = min(mr, R[p])
-                    }
-                    cw[i] = byte ^ F.scramble[slot * n + i]
-                    crel[i] = mr
+            var cw = [UInt8](repeating: 0, count: n)
+            var crel = [Float](repeating: 1, count: n)
+            for i in 0..<n {
+                var byte: UInt8 = 0
+                var mr: Float = .greatestFiniteMagnitude
+                for q in 0..<8 {
+                    let bi = (slot * n + i) * 8 + q
+                    byte = byte << 1 | info[bi]
+                    if !infoRel.isEmpty { mr = min(mr, infoRel[bi]) }
                 }
-                if let (p, c) = decodeCodeword(cw, crel, F) { packets.append(p); corrections += c; break }
+                cw[i] = byte ^ F.scramble[slot * n + i]
+                if !infoRel.isEmpty { crel[i] = mr }
             }
+            if let (p, c) = decodeCodeword(cw, crel, F) { packets.append(p); corrections += c }
         }
         stats.decoded = packets.count
         stats.corrections = corrections

@@ -74,6 +74,8 @@ struct SoundSender: View {
     @State private var pulse = false
 
     private var band: AcousticBand { AcousticBand(rawValue: bandRaw) ?? .full }
+    /// stored value clamped, in case it came from an older, longer rate ladder
+    private var rate: Int { min(max(0, level), Acoustic.levels.count - 1) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -102,7 +104,7 @@ struct SoundSender: View {
             .padding(4)
             .background(.white.opacity(0.06), in: Capsule())
             .padding(.horizontal, 22)
-            IconSlider(value: Binding(get: { Double(level) }, set: { level = Int($0) }),
+            IconSlider(value: Binding(get: { Double(rate) }, set: { level = Int($0) }),
                        range: 0...Double(Acoustic.levels.count - 1), low: "tortoise", high: "hare")
                 .padding(.horizontal, 22)
                 .padding(.vertical, 14)
@@ -111,10 +113,10 @@ struct SoundSender: View {
         .environment(\.colorScheme, .dark)
         .onAppear {
             pulse = true
-            player.start(payload: payload, band: band, level: level)
+            player.start(payload: payload, band: band, level: rate)
         }
         .onDisappear { player.stop() }
-        .onChange(of: bandRaw) { _, _ in player.set(band: band, level: level) }
-        .onChange(of: level) { _, _ in player.set(band: band, level: level) }
+        .onChange(of: bandRaw) { _, _ in player.set(band: band, level: rate) }
+        .onChange(of: level) { _, _ in player.set(band: band, level: rate) }
     }
 }

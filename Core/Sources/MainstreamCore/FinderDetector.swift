@@ -5,7 +5,6 @@ struct FinderCandidate {
     var y: Double
     var module: Double
     var count: Int
-    var inverted = false
 }
 
 /// QR-style 1:1:3:1:1 finder detection on a small luma image.
@@ -22,10 +21,6 @@ final class FinderDetector {
         lum = [UInt8](repeating: 0, count: w * h)
         bin = [UInt8](repeating: 0, count: w * h)
         integral = [UInt32](repeating: 0, count: (w + 1) * (h + 1))
-    }
-
-    func invert() {
-        lum.withUnsafeMutableBufferPointer { L in for i in 0..<L.count { L[i] = 255 &- L[i] } }
     }
 
     func binarize() {
@@ -185,8 +180,7 @@ final class FinderDetector {
                 guard lu > avgM * 12, lv > avgM * 12 else { continue }
                 let cosA = (ux * vx + uy * vy) / (lu * lv)
                 guard abs(cosA) < 0.35 else { continue }
-                var miss = FinderCandidate(x: p.x + q.x - c.x, y: p.y + q.y - c.y, module: avgM, count: 0)
-                miss.inverted = (lu < lv ? p : q).inverted
+                let miss = FinderCandidate(x: p.x + q.x - c.x, y: p.y + q.y - c.y, module: avgM, count: 0)
                 guard let ordered = clockwise(t + [miss]) else { continue }
                 let score = Double(t.reduce(0) { $0 + $1.count }) * (1 - abs(cosA))
                 if score > bestScore { bestScore = score; best = ordered }

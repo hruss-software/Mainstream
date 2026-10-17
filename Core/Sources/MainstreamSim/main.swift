@@ -47,7 +47,6 @@ if let path = env["DECODE"] {
     var bgra = shot.pixels
     for i in stride(from: 0, to: bgra.count, by: 4) { bgra.swapAt(i, i + 2) }
     let fd = FrameDecoder()
-    fd.bipolar = env["BIPOLAR"] != nil
     fd.debug = true
     let (pk, st) = bgra.withUnsafeBufferPointer { fd.decode(BGRAFrame(base: $0.baseAddress!, width: shot.width, height: shot.height, bytesPerRow: shot.width * 4)) }
     print("direct: found \(st.found) level \(String(describing: st.levelIndex)) decoded \(st.decoded)/\(st.slots) corr \(st.corrections) markers \(st.markersFound)/\(st.markersTotal)")
@@ -145,7 +144,7 @@ if let pair = env["GENIE"] {
     }
     let tx = frames(parts[0]), rxf = frames(parts[1])
     guard let b = tx.first?.band, let li = tx.first?.level else { exit(1) }
-    let K = b.carriers.count, M = 1 << Acoustic.levels[li].bits
+    let K = (0..<b.carriers.count).filter { $0 % 8 != 0 }.count, M = 1 << Acoustic.levels[li].bits
     let unit = M == 2 ? Float.pi : 2 * Float.pi / Float(M)
     func wrap(_ a: Float) -> Float { var v = a; while v > .pi { v -= 2 * .pi }; while v < -.pi { v += 2 * .pi }; return v }
     // frames are identical every frame? no: match by symbol-decision agreement
@@ -167,7 +166,12 @@ if let pair = env["GENIE"] {
             let wrong = e.filter { abs($0) > unit / 2 }.count
             return String(format: "mean|err| %.2f rad, symbol errors %.1f%%", m, 100 * Float(wrong) / Float(e.count))
         }
-        print("rx frame \(fi) ↔ tx frame \(bestT): raw \(stats(errsRaw)) | after slope fit \(stats(errsCorr))")
+        let coh = zip(t.lastIdx, r.lastIdx).filter { $0 != $1 }.count
+        let symsPerCarrier = total / K
+        var early = 0, late = 0, nE = 0, nL = 0
+        for q in 0..<total { let isEarly = q / K < symsPerCarrier / 2; if t.lastIdx[q] != r.lastIdx[q] { if isEarly { early += 1 } else { late += 1 } }; if isEarly { nE += 1 } else { nL += 1 } }
+        print(String(format: "rx frame %d ↔ tx frame %d: coherent step errors %.1f%% (first half %.1f%%, second half %.1f%%) | differential %@", fi, bestT,
+                     100 * Double(coh) / Double(total), 100 * Double(early) / Double(max(1, nE)), 100 * Double(late) / Double(max(1, nL)), stats(errsRaw)))
         // per carrier-region mean error (bias) and spread, raw
         let syms = total / K
         var line = "  raw mean error by carrier decile:"
@@ -224,7 +228,9 @@ if env["AUDIO"] != nil {
         for band in AcousticBand.allCases where env["BANDS"] == nil || env["BANDS"]!.contains("\(band.rawValue)") {
             var room = RoomParams(); room.snrDB = snr
             if let ppm = env["PPM"] { room.clockPPM = Double(ppm)! }
-            if band != .full { room.highCut = 22_000 }
+            if let lc = env["LOWCUT"] { room.lowCut = Double(lc)! }
+            if let hc = env["HIGHCUT"] { room.highCut = Double(hc)! }
+            if band != .full && env["HIGHCUT"] == nil { room.highCut = 22_000 }
             for li in 0..<Acoustic.levels.count {
                 let lv = Acoustic.levels[li]
                 let (ok, sec, fr, q) = acousticSim(band: band, level: li, room: room, bytes: bytes)
@@ -234,36 +240,6 @@ if env["AUDIO"] != nil {
             }
         }
     }
-    exit(0)
-}
-if env["BIPTEST"] != nil {
-    for li in [15, 16, 17, 7] {
-        let fit = Ladder.fit(level: li, width: availW, height: availH)!
-        let L = FrameLayout.get(level: li, aspect: fit.aspect)
-        let enc = TransferEncoder(payload: payload)
-        let scr = Channel.screen(layout: L, frame: Renderer.frame(enc, layout: L), cellPx: fit.cellPx, screenW: screenW, screenH: screenH)
-        var p = ChannelParams(); p.camW = camW; p.camH = camH
-        var cam = Channel.capture(scr, p)
-        let fd = FrameDecoder(); fd.bipolar = true
-        let (_, a) = cam.withUnsafeBufferPointer { fd.decode(BGRAFrame(base: $0.baseAddress!, width: camW, height: camH, bytesPerRow: camW * 4)) }
-        let split = Int(env["SPLIT"] ?? "960")!
-        for y in 0..<camH { for x in 0..<split { let o = (y * camW + x) * 4; for c in 0..<3 { cam[o + c] = 255 - cam[o + c] } } }
-        let (_, b) = cam.withUnsafeBufferPointer { fd.decode(BGRAFrame(base: $0.baseAddress!, width: camW, height: camH, bytesPerRow: camW * 4)) }
-        print("L\(li) normal: found \(a.found) \(a.decoded)/\(a.slots) | half-inverted: found \(b.found) \(b.decoded)/\(b.slots) markers \(b.markersFound)/\(b.markersTotal)")
-    }
-    exit(0)
-}
-if env["HIDDEN"] != nil {
-    let levels = (env["LEVELS"] ?? "15,16,17,18").split(separator: ",").map { Int($0)! }
-    let alphas = (env["ALPHAS"] ?? "0.02,0.03,0.05").split(separator: ",").map { Double($0)! }
-    let c = conds[Int(env["COND"] ?? "0")!]
-    let dur = Double(env["DUR"] ?? "1.0")!
-    print("hidden: cond \(c.name) camera \(camW)x\(camH) window \(Hidden.window) duration \(dur)s")
-    for li in levels { for a in alphas {
-        let (g, n, fnd, ok) = hiddenSim(level: li, alpha: a, cond: c, duration: dur, seed: UInt64(li * 10))
-        let L = Ladder.levels[li]
-        print(String(format: "L%2d cols %3d α %.3f | found %2d/%2d  ok/found %5.1f%%  unique goodput %6.2f kB/s", li, L.cols, a, fnd, n, ok * 100, g / 1000))
-    } }
     exit(0)
 }
 if env["TEMPORAL"] != nil {
@@ -386,84 +362,6 @@ struct SplitMix64Sim {
     }
 }
 
-// MARK: hidden video through the temporal camera model
-
-func hiddenSim(level li: Int, alpha: Double, cond c: Cond, duration: Double, seed: UInt64) -> (goodput: Double, decodes: Int, found: Int, okFrac: Double) {
-    guard let fit = Ladder.fit(level: li, width: availW, height: availH) else { return (0, 0, 0, 0) }
-    let L = FrameLayout.get(level: li, aspect: fit.aspect)
-    let enc = TransferEncoder(payload: payload)
-    var patterns: [(RGBAImage, RGBAImage)] = []
-    func pattern(_ k: Int) -> (RGBAImage, RGBAImage) {
-        while patterns.count <= k {
-            let p = Hidden.pattern(layout: L, frame: Renderer.frame(enc, layout: L), cellPx: fit.cellPx)
-            patterns.append((p, Hidden.complement(p)))
-        }
-        return patterns[k]
-    }
-    var screens: [Int: RGBAImage] = [:]
-    func screen(_ f: Int) -> RGBAImage {
-        if let s = screens[f] { return s }
-        let v = SyntheticVideo.frame(Double(f) / 60, width: screenW, height: screenH)
-        let (p, q) = pattern(f / Hidden.window)
-        let s = SyntheticVideo.embed(v, pattern: f % 2 == 0 ? p : q, alpha: alpha)
-        screens[f] = s
-        if let old = screens.keys.min(), screens.count > 12 { screens[old] = nil }
-        return s
-    }
-    let T = 1.0 / 60, readout = 0.012, exposure = 0.004
-    var r = SplitMix64Sim(seed)
-    var t = T + r.unit() * T
-    let demod = HiddenDemodulator()
-    let fd = FrameDecoder()
-    fd.bipolar = true
-    var seen = Set<Int>()
-    var i = 0, decodes = 0, found = 0, okSum = 0.0
-    while t < duration + T {
-        let kmin = max(0, Int(floor((t - T) / T)))
-        let kmax = Int(floor((t + readout + exposure) / T)) + 1
-        let frames = (kmin...kmax).map { screen($0) }
-        var p = ChannelParams()
-        p.camW = camW; p.camH = camH
-        p.blur = c.blur * Double(camW) / 3840; p.noise = c.noise; p.fill = c.fill; p.crosstalk = c.ct; p.tilt = c.tilt
-        p.seed = seed &+ UInt64(i)
-        p.geometrySeed = seed
-        p.shake = Double(env["SHAKE"] ?? "0.5")!
-        p.pixelFill = Double(env["FILL"] ?? "0.7")!
-        let H = Double(camH), tt = t
-        let cam = Channel.capture(frames: frames, p) { ys, yc in
-            let a = tt + Double(yc) / H * readout
-            let k = Int(floor((a - ys * T) / T))
-            let s = Double(k + 1) * T + ys * T
-            return (k - kmin, Float(max(0, min(1, (a + exposure - s) / exposure))))
-        }
-        // drop captures the way a busy phone does (alwaysDiscardsLateVideoFrames)
-        let dropP = Double(env["DROP"] ?? "0")!
-        if r.unit() >= dropP {
-            cam.withUnsafeBufferPointer { demod.push(BGRAFrame(base: $0.baseAddress!, width: camW, height: camH, bytesPerRow: camW * 4), time: tt) }
-        }
-        if i % 4 == 0, let img = demod.render() {
-            let (pk, st) = img.withFrame { fd.decode($0) }
-            decodes += 1
-            if st.found { found += 1; okSum += Double(st.decoded) / Double(max(1, st.slots)) }
-            for q in pk where q.type == .data { seen.insert(q.block << 16 | q.id) }
-            if env["DUMP"] != nil && decodes == 3 { img.withFrame { f in writePNG(f, env["DUMP"]!) } }
-        }
-        i += 1
-        t += T
-    }
-    return (Double(seen.count) * Double(Wire.symbolSize) / duration, decodes, found, found > 0 ? okSum / Double(found) : 0)
-}
-
-func writePNG(_ f: BGRAFrame, _ path: String) {
-    let data = Data(bytes: f.base, count: f.height * f.bytesPerRow) as CFData
-    let cg = CGImage(width: f.width, height: f.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: f.bytesPerRow,
-                     space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                     bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
-                     provider: CGDataProvider(data: data)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
-    let dst = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil)!
-    CGImageDestinationAddImage(dst, cg, nil)
-    CGImageDestinationFinalize(dst)
-}
 
 
 // MARK: acoustic modem through a simulated room

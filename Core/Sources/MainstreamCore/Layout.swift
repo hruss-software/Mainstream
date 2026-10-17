@@ -25,14 +25,7 @@ public enum Ladder {
         Level(cols: 256, bpc: 3, parity: 64, hold: 1),
         Level(cols: 288, bpc: 3, parity: 64, hold: 1),
         Level(cols: 320, bpc: 3, parity: 64, hold: 1),
-        // hidden-video levels (low-amplitude temporal modulation over a video)
-        Level(cols: 52,  bpc: 3, parity: 48, hold: 1),
-        Level(cols: 64,  bpc: 3, parity: 48, hold: 1),
-        Level(cols: 80,  bpc: 3, parity: 48, hold: 1),
-        Level(cols: 96,  bpc: 3, parity: 48, hold: 1),
     ]
-    public static let visibleCount = 15
-    public static let hiddenLevels = 15..<19
     public static var defaultIndex = 7
     /// rows / cols
     public static let aspects: [Double] = [1.0, 1.2, 1.35, 1.5, 1.65, 1.8, 1.95, 2.1]
@@ -102,7 +95,7 @@ public final class FrameLayout {
         level = Ladder.levels[li]
         cols = level.cols
         rows = Int((Double(cols) * Ladder.aspects[ai]).rounded())
-        m = max(Ladder.hiddenLevels.contains(li) && cols >= 74 ? 2 : 1, Int((Double(cols) / 56).rounded()))
+        m = max(1, Int((Double(cols) / 56).rounded()))
         n = Wire.messageSize + level.parity
         rs = ReedSolomon(parity: level.parity)
 

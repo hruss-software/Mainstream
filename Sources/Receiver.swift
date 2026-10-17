@@ -4,7 +4,7 @@ import UIKit
 import MainstreamCore
 
 enum LinkMode: String, CaseIterable {
-    case screen, sound, hidden
+    case screen, sound
 }
 
 struct Received: Identifiable {
@@ -12,7 +12,7 @@ struct Received: Identifiable {
     let payload: Payload
 }
 
-/// Receives over camera (visible or hidden codes, one or two cameras) or microphone,
+/// Receives over camera (one or two cameras) or microphone,
 /// and owns the camera for focus control and photos.
 final class Receiver: NSObject, ObservableObject {
     @Published var progress: Double = 0
@@ -24,7 +24,6 @@ final class Receiver: NSObject, ObservableObject {
     @Published var audioLevel: Float = 0
     @Published var micDenied = false
     @Published var heard = 0                  // acoustic sync preambles detected
-    @Published var hiddenPreview: UIImage?    // demodulated hidden-code thumbnail
     @Published private(set) var multiCam = false
     @Published private(set) var dualActive = false
     @Published var lensPosition: Float = 0.5
@@ -81,7 +80,6 @@ final class Receiver: NSObject, ObservableObject {
     func setMode(_ m: LinkMode) {
         uiMode = m
         ingestQueue.async { self.mode = m; self.transfer.reset(); self.usefulTimes.removeAll() }
-        for p in pipes { p.resetHidden() }
         // sound mode turns the camera off so it can't take over the audio session
         sessionQueue.async { [self] in
             if m == .sound { session?.stopRunning() } else if running {
@@ -92,7 +90,6 @@ final class Receiver: NSObject, ObservableObject {
         if m == .sound { startListening() } else { stopListening() }
         progress = 0
         active = false
-        hiddenPreview = nil
     }
 
     func start(mode m: LinkMode) {
@@ -161,7 +158,6 @@ final class Receiver: NSObject, ObservableObject {
         if s.canAddOutput(photo) { s.addOutput(photo); photoOutput = photo }
         s.commitConfiguration()
         configure(device, formats: device.formats, cost: nil)
-        pipe.frameInterval = device.activeVideoMinFrameDuration.seconds
         session = s
         devices = [device]
         pipes = [pipe]
@@ -212,10 +208,7 @@ final class Receiver: NSObject, ObservableObject {
         }
         // highest multi-cam formats the hardware budget allows
         if ok {
-            for (dev, pipe) in zip([wide, second], newPipes) {
-                configure(dev, formats: dev.formats.filter(\.isMultiCamSupported), cost: s)
-                pipe.frameInterval = dev.activeVideoMinFrameDuration.seconds
-            }
+            for dev in [wide, second] { configure(dev, formats: dev.formats.filter(\.isMultiCamSupported), cost: s) }
         }
         s.commitConfiguration()
         guard ok, s.hardwareCost <= 1 else {
@@ -434,22 +427,6 @@ final class Receiver: NSObject, ObservableObject {
         absorb(packets, found: gotFrame, ok: ok, load: load, level: peak)
     }
 
-    /// Small portrait thumbnail of the demodulated hidden signal, for aiming.
-    fileprivate func publishHiddenPreview(_ img: DemodImage) {
-        let step = max(1, img.width / 240)
-        let w = img.width / step, h = img.height / step
-        var px = [UInt8](repeating: 255, count: w * h * 4)
-        for y in 0..<h {
-            for x in 0..<w {
-                let s = ((y * step) * img.width + x * step) * 4, d = (y * w + x) * 4
-                px[d] = img.bgra[s + 2]; px[d + 1] = img.bgra[s + 1]; px[d + 2] = img.bgra[s]
-            }
-        }
-        guard let cg = cgImage(RGBAImage(width: w, height: h, pixels: px)) else { return }
-        let ui = UIImage(cgImage: cg, scale: 1, orientation: .right)
-        DispatchQueue.main.async { if self.uiMode == .hidden { self.hiddenPreview = ui } }
-    }
-
     // MARK: shared ingest (ingestQueue)
 
     fileprivate func absorb(_ packets: [Packet], found: Bool, ok: Double, load: Double, level: Float? = nil) {
@@ -496,21 +473,11 @@ final class Receiver: NSObject, ObservableObject {
 private final class CameraPipe: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     weak var owner: Receiver?
     let queue: DispatchQueue
-    private let decodeQueue: DispatchQueue
     private let decoder = FrameDecoder()
-    private let hiddenDecoder = FrameDecoder()
-    private let demod = HiddenDemodulator()
-    private var frames = 0
-    private let busyLock = NSLock()
-    private var busy = false
-    private var lastThumb: TimeInterval = 0
-    var frameInterval = 1.0 / 60
 
     init(owner: Receiver, index: Int) {
         self.owner = owner
         queue = DispatchQueue(label: "mainstream.video.\(index)", qos: .userInteractive)
-        decodeQueue = DispatchQueue(label: "mainstream.hidden.\(index)", qos: .userInitiated)
-        hiddenDecoder.bipolar = true
     }
 
     func makeOutput() -> AVCaptureVideoDataOutput {
@@ -521,43 +488,14 @@ private final class CameraPipe: NSObject, AVCaptureVideoDataOutputSampleBufferDe
         return out
     }
 
-    func resetHidden() { queue.async { self.demod.reset() } }
-
     func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let owner, let pb = CMSampleBufferGetImageBuffer(sb) else { return }
-        let mode = owner.mode
-        if mode == .sound { return }
+        guard let owner, owner.mode == .screen, let pb = CMSampleBufferGetImageBuffer(sb) else { return }
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
         let f = BGRAFrame(base: base.assumingMemoryBound(to: UInt8.self), width: CVPixelBufferGetWidth(pb),
                           height: CVPixelBufferGetHeight(pb), bytesPerRow: CVPixelBufferGetBytesPerRow(pb))
-        frames += 1
-        if mode == .hidden {
-            // keep this callback short: store the capture, and decode on another queue so
-            // captures keep arriving every 1/60 s
-            demod.push(f, time: CMSampleBufferGetPresentationTimeStamp(sb).seconds, frameInterval: frameInterval)
-            busyLock.lock()
-            let idle = !busy
-            if idle && frames % 3 == 0 { busy = true }
-            busyLock.unlock()
-            guard idle && frames % 3 == 0 else { return }
-            guard let img = demod.render() else { busyLock.lock(); busy = false; busyLock.unlock(); return }
-            decodeQueue.async { [self] in
-                let (packets, stats) = img.withFrame { hiddenDecoder.decode($0) }
-                report(packets, stats)
-                let now = CACurrentMediaTime()
-                if now - lastThumb > 0.25 { lastThumb = now; owner.publishHiddenPreview(img) }
-                busyLock.lock(); busy = false; busyLock.unlock()
-            }
-            return
-        }
         let (packets, stats) = decoder.decode(f)
-        report(packets, stats)
-    }
-
-    private func report(_ packets: [Packet], _ stats: FrameStats) {
-        guard let owner else { return }
         let ok = stats.slots > 0 ? Double(stats.decoded) / Double(stats.slots) : 0
         let load = stats.decoded > 0 ? Double(stats.corrections) / Double(stats.decoded) / Double(max(1, stats.parity / 2)) : 1
         owner.ingestQueue.async { owner.absorb(packets, found: stats.found, ok: ok, load: load) }
