@@ -3,17 +3,12 @@ import Combine
 import UIKit
 import MainstreamCore
 
-enum LinkMode: String, CaseIterable {
-    case screen, sound
-}
-
 struct Received: Identifiable {
     let id = UUID()
     let payload: Payload
 }
 
-/// Receives over camera (one or two cameras) or microphone,
-/// and owns the camera for focus control and photos.
+/// Receives over the camera (one or two cameras), and owns it for focus control and photos.
 final class Receiver: NSObject, ObservableObject {
     @Published var progress: Double = 0
     @Published var active = false
@@ -21,9 +16,6 @@ final class Receiver: NSObject, ObservableObject {
     @Published var rate: Double = 0
     @Published var hint = 0
     @Published var received: Received?
-    @Published var audioLevel: Float = 0
-    @Published var micDenied = false
-    @Published var heard = 0                  // acoustic sync preambles detected
     @Published private(set) var multiCam = false
     @Published private(set) var dualActive = false
     @Published var lensPosition: Float = 0.5
@@ -42,7 +34,6 @@ final class Receiver: NSObject, ObservableObject {
     // sessionQueue only
     private var running = false
     private var wantMulti = false
-    private var sessionMode: LinkMode = .screen
     private var pressureWatch: [NSKeyValueObservation] = []
     private var lastRestart: TimeInterval = 0
     /// main thread: the camera the focus slider follows
@@ -54,33 +45,14 @@ final class Receiver: NSObject, ObservableObject {
     private var usefulTimes: [(TimeInterval, Int)] = []
     private var lastUseful: TimeInterval = 0
     private var lastLock: TimeInterval = 0
-    private var firstLock: TimeInterval?      // start of the current transfer (sound rate average)
-    private var soundHint = 0
     private var lastPublish: TimeInterval = 0
     private var okEMA = 0.0, loadEMA = 0.0
-    fileprivate var mode: LinkMode = .screen
-
-    // audio
-    private let engine = AVAudioEngine()
-    private let acoustic = AcousticReceiver()
-    private var converter: AVAudioConverter?
-    private var listening = false
-    private var wantListening = false
-    private var lastTap: TimeInterval = 0
-    private var watchdog: Timer?
 
     override init() {
         super.init()
         preview.videoGravity = .resizeAspectFill
         pipPreview.videoGravity = .resizeAspectFill
-        // the audio engine stops when the session is reconfigured or interrupted; restart it
         let nc = NotificationCenter.default
-        nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in self?.restartListening() }
-        nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
-            let t = (n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
-            if t == .ended { self?.restartListening() }
-        }
-        nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in self?.restartListening() }
         // camera failures (often a multi-camera pair overheating) fall back instead of going dark
         nc.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: nil, queue: nil) { [weak self] n in self?.sessionFailed(n, interrupted: false) }
         nc.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: nil, queue: nil) { [weak self] n in self?.sessionFailed(n, interrupted: true) }
@@ -88,24 +60,12 @@ final class Receiver: NSObject, ObservableObject {
 
     // MARK: lifecycle
 
-    func setMode(_ m: LinkMode) {
-        ingestQueue.async { self.mode = m; self.transfer.reset(); self.usefulTimes.removeAll(); self.firstLock = nil }
-        // sound mode turns the camera off so it can't take over the audio session
+    func start() {
         sessionQueue.async { [self] in
-            sessionMode = m
-            if m == .sound { session?.stopRunning() } else if running {
-                if session == nil { build() }
-                if let s = session, !s.isRunning { s.startRunning() }
-            }
+            running = true
+            if session == nil { build() }
+            if let s = session, !s.isRunning { s.startRunning() }
         }
-        if m == .sound { startListening() } else { stopListening() }
-        progress = 0
-        active = false
-    }
-
-    func start(mode m: LinkMode) {
-        sessionQueue.async { self.running = true }
-        setMode(m)
     }
 
     func stop() {
@@ -113,11 +73,10 @@ final class Receiver: NSObject, ObservableObject {
             running = false
             session?.stopRunning()
         }
-        stopListening()
     }
 
     func reset() {
-        ingestQueue.async { self.transfer.reset(); self.usefulTimes.removeAll(); self.firstLock = nil }
+        ingestQueue.async { self.transfer.reset(); self.usefulTimes.removeAll() }
         progress = 0
         active = false
     }
@@ -129,7 +88,7 @@ final class Receiver: NSObject, ObservableObject {
             wantMulti = on
             session?.stopRunning()
             build()
-            if running && sessionMode != .sound { session?.startRunning() }
+            if running { session?.startRunning() }
         }
     }
 
@@ -140,7 +99,7 @@ final class Receiver: NSObject, ObservableObject {
         wantMulti = false
         session?.stopRunning()
         build()
-        if running && sessionMode != .sound { session?.startRunning() }
+        if running { session?.startRunning() }
         DispatchQueue.main.async { self.multiCam = false }
     }
 
@@ -154,7 +113,7 @@ final class Receiver: NSObject, ObservableObject {
             guard s === session else { return }
             if s is AVCaptureMultiCamSession {
                 fallBackToSingleCamera()
-            } else if !interrupted && running && sessionMode != .sound && CACurrentMediaTime() - lastRestart > 2 {
+            } else if !interrupted && running && CACurrentMediaTime() - lastRestart > 2 {
                 lastRestart = CACurrentMediaTime()
                 s.startRunning()
             }
@@ -406,7 +365,7 @@ final class Receiver: NSObject, ObservableObject {
         sessionQueue.async { [self] in
             if session == nil { build() }
             guard let s = session, let out = photoOutput else { return }
-            // the camera is off in sound mode: run it just long enough for the shot
+            // the camera is off while sending: run it just long enough for the shot
             let wasRunning = s.isRunning
             if !wasRunning { s.startRunning(); Thread.sleep(forTimeInterval: 0.6) }
             let settings = out.availablePhotoCodecTypes.contains(.hevc)
@@ -417,136 +376,26 @@ final class Receiver: NSObject, ObservableObject {
                     self?.photoDelegates.removeAll { $0 === d }
                     if let data { done(data) }
                 }
-                if !wasRunning { self?.sessionQueue.async { if self?.sessionMode == .sound { s.stopRunning() } } }
+                if !wasRunning { self?.sessionQueue.async { if self?.running == false { s.stopRunning() } } }
             }
             DispatchQueue.main.async { self.photoDelegates.append(del) }
             out.capturePhoto(with: settings, delegate: del)
         }
     }
 
-    // MARK: microphone
-
-    private func startListening() {
-        wantListening = true
-        if watchdog == nil {
-            // restart the engine if taps stop arriving (route change, interruption, camera)
-            watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                guard let self, self.wantListening else { return }
-                if !self.listening || CACurrentMediaTime() - self.lastTap > 1.5 { self.restartListening() }
-            }
-        }
-        guard !listening else { return }
-        AVAudioApplication.requestRecordPermission { ok in
-            DispatchQueue.main.async {
-                self.micDenied = !ok
-                if ok { self.beginListening() }
-            }
-        }
-    }
-
-    private func restartListening() {
-        guard wantListening, !micDenied else { return }
-        if listening {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-            listening = false
-        }
-        beginListening()
-    }
-
-    private func beginListening() {
-        guard wantListening, !listening else { return }
-        let s = AVAudioSession.sharedInstance()
-        do {
-            try s.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .mixWithOthers])
-            try? s.setPreferredSampleRate(Acoustic.sampleRate)
-            try s.setActive(true)
-        } catch { return }
-        let input = engine.inputNode
-        let inFmt = input.outputFormat(forBus: 0)
-        guard inFmt.sampleRate > 0, let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Acoustic.sampleRate, channels: 1, interleaved: false)
-        else { return }
-        converter = inFmt.sampleRate == Acoustic.sampleRate && inFmt.channelCount == 1 ? nil : AVAudioConverter(from: inFmt, to: target)
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: inFmt) { [weak self] buf, _ in
-            guard let self else { return }
-            self.lastTap = CACurrentMediaTime()
-            var mono: AVAudioPCMBuffer = buf
-            if let conv = self.converter {
-                let cap = AVAudioFrameCount(Double(buf.frameLength) * Acoustic.sampleRate / inFmt.sampleRate) + 32
-                guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: cap) else { return }
-                var fed = false
-                conv.convert(to: out, error: nil) { _, status in
-                    if fed { status.pointee = .noDataNow; return nil }
-                    fed = true
-                    status.pointee = .haveData
-                    return buf
-                }
-                mono = out
-            }
-            guard let ch = mono.floatChannelData?[0] else { return }
-            let n = Int(mono.frameLength)
-            let samples = Array(UnsafeBufferPointer(start: ch, count: n))
-            self.ingestQueue.async { self.ingestAudio(samples) }
-        }
-        engine.prepare()
-        do {
-            try engine.start()
-            listening = true
-            lastTap = CACurrentMediaTime()
-        } catch {
-            input.removeTap(onBus: 0)
-        }
-    }
-
-    private func stopListening() {
-        wantListening = false
-        watchdog?.invalidate()
-        watchdog = nil
-        guard listening else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        listening = false
-        audioLevel = 0
-    }
-
-    private func ingestAudio(_ samples: [Float]) {
-        let before = acoustic.stats.frames
-        let syncBefore = acoustic.stats.syncs
-        let packets = samples.withUnsafeBufferPointer { acoustic.process($0) }
-        var peak: Float = 0
-        for v in samples { peak = max(peak, abs(v)) }
-        let st = acoustic.stats
-        let gotFrame = st.frames != before
-        let ok = st.slots > 0 ? Double(st.decoded) / Double(st.slots) : 0
-        if gotFrame, let li = st.level {
-            // ↑ when the measured channel would carry the next rate, ↓ when frames fail
-            let next = li + 1
-            soundHint = ok < 0.6 ? -1 : (next < Acoustic.levels.count && ok > 0.9 && st.capacity > Acoustic.capacityNeeded[next] + 0.2 ? 1 : 0)
-        }
-        // a heard sync counts as lock, so the ring stays green between frames (one every ~4 s)
-        let heardSync = st.syncs != syncBefore
-        if heardSync { let n = st.syncs; DispatchQueue.main.async { self.heard = n } }
-        absorb(packets, found: heardSync, ok: ok, load: 0, level: peak)
-    }
-
     // MARK: shared ingest (ingestQueue)
 
-    fileprivate func absorb(_ packets: [Packet], found: Bool, ok: Double, load: Double, level: Float? = nil) {
+    fileprivate func absorb(_ packets: [Packet], found: Bool, ok: Double, load: Double) {
         let now = CACurrentMediaTime()
         var useful = 0
         for p in packets where transfer.ingest(p) { useful += 1 }
         if useful > 0 { usefulTimes.append((now, useful)); lastUseful = now }
         if found {
             lastLock = now
-            if firstLock == nil { firstLock = now }
             okEMA = okEMA * 0.9 + ok * 0.1
             loadEMA = loadEMA * 0.9 + load * 0.1
         }
-        // sound delivers a burst of packets every ~4 s frame, so its rate is averaged over
-        // several frames (and over the transfer so far, while it is younger than that)
-        let window = mode == .sound ? 13.0 : 1.0
-        usefulTimes.removeAll { now - $0.0 > window }
+        usefulTimes.removeAll { now - $0.0 > 1.0 }
         if let done = transfer.takeResult() {
             usefulTimes.removeAll()
             DispatchQueue.main.async {
@@ -559,12 +408,10 @@ final class Receiver: NSObject, ObservableObject {
         if now - lastPublish < 0.1 { return }
         lastPublish = now
         let prog = transfer.progress
-        let bytes = Double(usefulTimes.reduce(0) { $0 + $1.1 } * Wire.symbolSize)
-        let span = mode == .sound ? min(window, max(4.3, now - (firstLock ?? now))) : window
-        let r = bytes / span
-        let isActive = now - lastUseful < (mode == .sound ? 9 : 1.5) && transfer.session != nil
-        let isLocked = now - lastLock < (mode == .sound ? 6 : 0.3)
-        let h = !isLocked ? 0 : mode == .sound ? soundHint : (okEMA > 0.97 && loadEMA < 0.25 ? 1 : (okEMA < 0.6 ? -1 : 0))
+        let r = Double(usefulTimes.reduce(0) { $0 + $1.1 } * Wire.symbolSize)
+        let isActive = now - lastUseful < 1.5 && transfer.session != nil
+        let isLocked = now - lastLock < 0.3
+        let h = !isLocked ? 0 : (okEMA > 0.97 && loadEMA < 0.25 ? 1 : (okEMA < 0.6 ? -1 : 0))
         DispatchQueue.main.async {
             if self.received != nil { return }
             self.progress = prog
@@ -572,7 +419,6 @@ final class Receiver: NSObject, ObservableObject {
             self.active = isActive
             self.locked = isLocked
             self.hint = h
-            if let level { self.audioLevel = level }
             if !self.manualFocus, let d = self.focusDevice { self.lensPosition = d.lensPosition }
         }
     }
@@ -598,7 +444,7 @@ private final class CameraPipe: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let owner, owner.mode == .screen, let pb = CMSampleBufferGetImageBuffer(sb) else { return }
+        guard let owner, let pb = CMSampleBufferGetImageBuffer(sb) else { return }
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(pb) else { return }

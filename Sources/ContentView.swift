@@ -7,12 +7,10 @@ import MainstreamCore
 struct Outgoing: Identifiable {
     let id = UUID()
     let payload: Payload
-    let mode: LinkMode
 }
 
 struct ContentView: View {
     @StateObject private var rx = Receiver()
-    @AppStorage("mode") private var modeRaw = LinkMode.screen.rawValue
     @AppStorage("multiCam") private var multiCam = false
     @State private var outgoing: Outgoing?
     @State private var composing = false
@@ -22,29 +20,21 @@ struct ContentView: View {
     @State private var flash = false
     @Environment(\.scenePhase) private var phase
 
-    private var mode: LinkMode { LinkMode(rawValue: modeRaw) ?? .screen }
-
     var body: some View {
         ZStack {
             CameraPreview(layer: rx.preview) { rx.focus(atLayerPoint: $0) }
                 .ignoresSafeArea()
-            if mode == .sound {
-                ListenView(level: rx.audioLevel, locked: rx.locked, heard: rx.heard, denied: rx.micDenied)
-                    .ignoresSafeArea()
-            } else {
-                Color.black.opacity(rx.locked ? 0 : 0.25)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                    .animation(.easeInOut(duration: 0.25), value: rx.locked)
-            }
+            Color.black.opacity(rx.locked ? 0 : 0.25)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .animation(.easeInOut(duration: 0.25), value: rx.locked)
             Color.white.opacity(flash ? 0.8 : 0).ignoresSafeArea().allowsHitTesting(false)
             VStack(spacing: 0) {
                 HStack(alignment: .top) {
-                    ModePicker(mode: Binding(get: { mode }, set: { modeRaw = $0.rawValue }))
                     Spacer()
                     VStack(alignment: .trailing, spacing: 10) {
                         ReceiveGauge(progress: rx.progress, rate: rx.rate, hint: rx.hint, active: rx.active)
-                        if rx.dualActive && mode != .sound {
+                        if rx.dualActive {
                             PipPreview(layer: rx.pipPreview)
                                 .frame(width: 84, height: 112)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -54,13 +44,11 @@ struct ContentView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
                 Spacer()
-                if mode != .sound {
-                    HStack {
-                        Spacer()
-                        CameraControls(rx: rx, multiCam: $multiCam)
-                    }
-                    .padding(.trailing, 12)
+                HStack {
+                    Spacer()
+                    CameraControls(rx: rx, multiCam: $multiCam)
                 }
+                .padding(.trailing, 12)
                 Spacer()
                 HStack(spacing: 26) {
                     Button { composing = true } label: { icon("textformat") }
@@ -78,16 +66,14 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             rx.setMultiCam(multiCam)
-            rx.start(mode: mode)
+            rx.start()
             if let i = CommandLine.arguments.firstIndex(of: "-demoSend"), i + 1 < CommandLine.arguments.count {
-                let m = CommandLine.arguments.firstIndex(of: "-demoMode").map { LinkMode(rawValue: CommandLine.arguments[$0 + 1]) ?? .screen } ?? .screen
-                outgoing = Outgoing(payload: Payload(kind: .text, name: "text.txt", data: Data(CommandLine.arguments[i + 1].utf8)), mode: m)
+                outgoing = Outgoing(payload: Payload(kind: .text, name: "text.txt", data: Data(CommandLine.arguments[i + 1].utf8)))
             }
         }
         .onChange(of: phase) { _, p in
-            if p == .active && outgoing == nil && !recording { rx.start(mode: mode) } else if p != .active { rx.stop() }
+            if p == .active && outgoing == nil && !recording { rx.start() } else if p != .active { rx.stop() }
         }
-        .onChange(of: modeRaw) { _, _ in rx.setMode(mode) }
         .onChange(of: multiCam) { _, on in rx.setMultiCam(on) }
         // the receiver drops to one camera if the pair fails or overheats
         .onChange(of: rx.multiCam) { _, on in if !on && multiCam { multiCam = false } }
@@ -105,7 +91,7 @@ struct ContentView: View {
         .sheet(isPresented: $composing) {
             TextComposer { send(Payload(kind: .text, name: "text.txt", data: Data($0.utf8))) }
         }
-        .sheet(isPresented: $recording, onDismiss: { if outgoing == nil { rx.start(mode: mode) } }) {
+        .sheet(isPresented: $recording, onDismiss: { if outgoing == nil { rx.start() } }) {
             AudioRecorderView { url in
                 if let d = try? Data(contentsOf: url) { send(Payload(kind: .audio, name: "audio.m4a", data: d)) }
             }
@@ -122,18 +108,13 @@ struct ContentView: View {
                 send(Payload(kind: kind, name: url.lastPathComponent, data: d))
             }
         }
-        .fullScreenCover(item: $outgoing, onDismiss: { rx.start(mode: mode) }) { o in
-            Group {
-                switch o.mode {
-                case .screen: VisibleSender(payload: o.payload) { outgoing = nil }
-                case .sound: SoundSender(payload: o.payload) { outgoing = nil }
-                }
-            }
+        .fullScreenCover(item: $outgoing, onDismiss: { rx.start() }) { o in
+            VisibleSender(payload: o.payload) { outgoing = nil }
             .statusBarHidden()
             .persistentSystemOverlays(.hidden)
             .onAppear {
                 UIApplication.shared.isIdleTimerDisabled = true
-                if o.mode != .sound { Brightness.boost() }
+                Brightness.boost()
             }
             .onDisappear {
                 UIApplication.shared.isIdleTimerDisabled = false
@@ -159,27 +140,7 @@ struct ContentView: View {
     }
 
     private func send(_ p: Payload) {
-        outgoing = Outgoing(payload: p, mode: mode)
-    }
-}
-
-struct ModePicker: View {
-    @Binding var mode: LinkMode
-
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach([(LinkMode.screen, "qrcode"), (.sound, "waveform")], id: \.0) { m, icon in
-                Button { mode = m } label: {
-                    Image(systemName: icon)
-                        .font(.system(size: 17, weight: .medium))
-                        .frame(width: 46, height: 36)
-                        .foregroundStyle(mode == m ? .black : .white)
-                        .background(mode == m ? Color.white : .clear, in: Capsule())
-                }
-            }
-        }
-        .padding(3)
-        .background(.ultraThinMaterial, in: Capsule())
+        outgoing = Outgoing(payload: p)
     }
 }
 
@@ -218,40 +179,6 @@ struct CameraControls: View {
     }
 }
 
-struct ListenView: View {
-    let level: Float
-    let locked: Bool
-    let heard: Int
-    let denied: Bool
-    @State private var ping = true    // true = faded out; flashes on each detected sync
-
-    var body: some View {
-        ZStack {
-            Color.black
-            ZStack {
-                // expands on each detected sync preamble
-                Circle().stroke(Color.green.opacity(ping ? 0 : 0.8), lineWidth: 3)
-                    .frame(width: 160, height: 160)
-                    .scaleEffect(ping ? 1.6 : 1)
-                Circle().stroke(locked ? Color.green.opacity(0.7) : .white.opacity(0.18), lineWidth: 2)
-                    .frame(width: 160, height: 160)
-                    // mic level, log scale so quiet rooms still move it
-                    .scaleEffect(1 + CGFloat(max(0, min(1, (20 * log10(max(level, 1e-5)) + 60) / 60))) * 0.45)
-                    .animation(.easeOut(duration: 0.1), value: level)
-                Image(systemName: denied ? "mic.slash" : "waveform")
-                    .font(.system(size: 44, weight: .medium))
-                    .foregroundStyle(denied ? .red : .white.opacity(0.85))
-            }
-            .offset(y: -120)
-        }
-        .allowsHitTesting(false)
-        .onChange(of: heard) { _, _ in
-            ping = false
-            withAnimation(.easeOut(duration: 0.6)) { ping = true }
-        }
-    }
-}
-
 enum Brightness {
     private static var saved: CGFloat?
     private static var screen: UIScreen? {
@@ -277,7 +204,7 @@ func rateText(_ bps: Double) -> String {
 }
 
 /// Always-visible receive status: progress ring with percentage, live rate, and a chevron when a
-/// faster (↑) or slower (↓) setting on the sender would do better.
+/// denser or faster (↑) or a gentler (↓) setting on the sender would do better.
 struct ReceiveGauge: View {
     let progress: Double
     let rate: Double

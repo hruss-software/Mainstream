@@ -28,7 +28,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_CFBundleDisplayName: Mainstream
         INFOPLIST_KEY_NSCameraUsageDescription: Receives data shown on another screen and takes photos to send.
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: Receives data sent as sound and records audio to send.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Records audio to send.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown

@@ -14,7 +14,6 @@
 		A82793B5E212D56FD857C093 /* MainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B1CEB87032F54DBD392DCFF /* MainApp.swift */; };
 		AD8295A88DDE9CA79F952051 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BFC6197D4E44E55D053465A /* ContentView.swift */; };
 		B4A31AA113F73E0A52638FDB /* Sender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B176F00CDD5345EAF9EC273 /* Sender.swift */; };
-		BB5CDB45FAF86D03D8623E52 /* SoundSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C25F21216A55B2CE326006 /* SoundSender.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,7 +23,6 @@
 		4B1CEB87032F54DBD392DCFF /* MainApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainApp.swift; sourceTree = "<group>"; };
 		6557C75EC56540FC9575FF6E /* Media.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Media.swift; sourceTree = "<group>"; };
 		A7127BC53FC4F7E934116884 /* Mainstream.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Mainstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D5C25F21216A55B2CE326006 /* SoundSender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoundSender.swift; sourceTree = "<group>"; };
 		E4EC713A7F8B98DFF4CE345F /* Core */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Core; path = Core; sourceTree = SOURCE_ROOT; };
 		F2737BD60FEA1AE6E71615A1 /* Receiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Receiver.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -66,7 +64,6 @@
 				6557C75EC56540FC9575FF6E /* Media.swift */,
 				F2737BD60FEA1AE6E71615A1 /* Receiver.swift */,
 				1B176F00CDD5345EAF9EC273 /* Sender.swift */,
-				D5C25F21216A55B2CE326006 /* SoundSender.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -160,7 +157,6 @@
 				8DABE5ED2FB439C3924E54A5 /* Media.swift in Sources */,
 				01D0EA0FC19CDC4EBE775693 /* Receiver.swift in Sources */,
 				B4A31AA113F73E0A52638FDB /* Sender.swift in Sources */,
-				BB5CDB45FAF86D03D8623E52 /* SoundSender.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -178,7 +174,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Mainstream;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Receives data shown on another screen and takes photos to send.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Receives data sent as sound and records audio to send.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records audio to send.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
@@ -208,7 +204,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Mainstream;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Receives data shown on another screen and takes photos to send.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Receives data sent as sound and records audio to send.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records audio to send.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
