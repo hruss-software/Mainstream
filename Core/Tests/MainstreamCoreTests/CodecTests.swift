@@ -103,4 +103,28 @@ final class CodecTests: XCTestCase {
         }
         XCTAssertEqual(dec.result?.data, Data(data))
     }
+
+    /// Compressible payloads are packed on the wire and come back byte-identical; random ones go raw.
+    func testCompressionRoundTrip() {
+        let text = Data(String(repeating: "Mainstream sends data through the camera. ", count: 3000).utf8)
+        var rng = SplitMix64(3)
+        let noise = Data((0..<40_000).map { _ in UInt8(truncatingIfNeeded: rng.next()) })
+        let big = Data(String(repeating: "0123456789abcdef", count: 400_000).utf8)   // > 4 MB: LZFSE
+        for (data, shouldPack) in [(text, true), (noise, false), (big, true)] {
+            let enc = TransferEncoder(payload: Payload(kind: .text, name: "t.txt", data: data))
+            XCTAssertEqual(enc.sentBytes < data.count, shouldPack)
+            let dec = TransferDecoder()
+            var buf = [UInt8](repeating: 0, count: 64 * Wire.messageSize)
+            var frames = 0
+            while dec.result == nil && frames < 2000 {
+                buf.withUnsafeMutableBufferPointer { enc.nextMessages(slots: 64, into: $0.baseAddress!) }
+                for s in 0..<64 {
+                    if let p = buf.withUnsafeBufferPointer({ parseMessage($0.baseAddress! + s * Wire.messageSize) }) { dec.ingest(p) }
+                }
+                frames += 1
+            }
+            XCTAssertEqual(dec.result?.data, data)
+            XCTAssertEqual(dec.result?.name, "t.txt")
+        }
+    }
 }

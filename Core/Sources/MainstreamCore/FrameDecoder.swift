@@ -61,9 +61,10 @@ public final class FrameDecoder {
         let w = f.width / d, h = f.height / d
         if finder == nil || finder!.w != w || finder!.h != h { finder = FinderDetector(w: w, h: h) }
         let fd = finder!
-        fd.lum.withUnsafeMutableBufferPointer { L in
+        fd.lum.withUnsafeMutableBufferPointer { LB in
+            let L = LB.baseAddress!
             let half = d / 2
-            for y in 0..<h {
+            let rowWork: (Int) -> Void = { y in
                 let sy = min(f.height - 2, y * d + half)
                 let row = f.base + sy * f.bytesPerRow
                 let row2 = row + f.bytesPerRow
@@ -74,6 +75,7 @@ public final class FrameDecoder {
                     L[y * w + x] = UInt8((a + b) >> 3)
                 }
             }
+            if concurrent { DispatchQueue.concurrentPerform(iterations: h, execute: rowWork) } else { for y in 0..<h { rowWork(y) } }
         }
         let cands = fd.detect()
         if debug {
@@ -371,22 +373,34 @@ public final class FrameDecoder {
 
     // MARK: classification
 
+    /// Runs `body(chunk)` over `count` items split into chunks, in parallel when allowed.
+    private func chunked(_ count: Int, _ size: Int = 4096, _ body: (Range<Int>) -> Void) {
+        let n = (count + size - 1) / size
+        if concurrent && n > 1 {
+            DispatchQueue.concurrentPerform(iterations: n) { body(($0 * size)..<min(count, ($0 + 1) * size)) }
+        } else {
+            for i in 0..<n { body((i * size)..<min(count, (i + 1) * size)) }
+        }
+    }
+
     private func normalise(_ v: inout [Float], _ L: FrameLayout, _ C: Int) {
         let W = L.cols, Hh = L.rows
         let IW = W + 1
         let R = 6
-        var cnt = [Float](repeating: 0, count: IW * (Hh + 1))
-        var s1 = [Float](repeating: 0, count: IW * (Hh + 1) * C)
-        var s2 = [Float](repeating: 0, count: IW * (Hh + 1) * C)
-        let isData = L.kind.map { $0 == .data }
+        // integral images in Double: whole-frame sums of squares outgrow Float's precision
+        var cnt = [Double](repeating: 0, count: IW * (Hh + 1))
+        var s1 = [Double](repeating: 0, count: IW * (Hh + 1) * C)
+        var s2 = [Double](repeating: 0, count: IW * (Hh + 1) * C)
+        let isData = L.isData
+        var r1 = [Double](repeating: 0, count: C), r2 = r1
         for y in 0..<Hh {
-            var rc: Float = 0
-            var r1 = [Float](repeating: 0, count: C), r2 = [Float](repeating: 0, count: C)
+            var rc: Double = 0
+            for ch in 0..<C { r1[ch] = 0; r2[ch] = 0 }
             for x in 0..<W {
                 let c = y * W + x
                 if isData[c] {
                     rc += 1
-                    for ch in 0..<C { let a = v[c * C + ch]; r1[ch] += a; r2[ch] += a * a }
+                    for ch in 0..<C { let a = Double(v[c * C + ch]); r1[ch] += a; r2[ch] += a * a }
                 }
                 let o = (y + 1) * IW + x + 1, u = y * IW + x + 1
                 cnt[o] = cnt[u] + rc
@@ -396,83 +410,124 @@ public final class FrameDecoder {
                 }
             }
         }
-        for c in L.dataCells {
-            let ci = Int(c)
-            let x = ci % W, y = ci / W
-            let x0 = max(0, x - R), x1 = min(W, x + R + 1), y0 = max(0, y - R), y1 = min(Hh, y + R + 1)
-            let a = y1 * IW + x1, b = y0 * IW + x0, cc = y0 * IW + x1, d = y1 * IW + x0
-            let n = cnt[a] + cnt[b] - cnt[cc] - cnt[d]
-            if n < 4 { continue }
-            for ch in 0..<C {
-                let m = (s1[a * C + ch] + s1[b * C + ch] - s1[cc * C + ch] - s1[d * C + ch]) / n
-                let q = (s2[a * C + ch] + s2[b * C + ch] - s2[cc * C + ch] - s2[d * C + ch]) / n
-                let sd = sqrt(max(q - m * m, 1))
-                v[ci * C + ch] = (v[ci * C + ch] - m) / sd
+        let cells = L.dataCells
+        cnt.withUnsafeBufferPointer { cn in s1.withUnsafeBufferPointer { S1 in s2.withUnsafeBufferPointer { S2 in
+            v.withUnsafeMutableBufferPointer { V in
+                let vp = V.baseAddress!
+                chunked(cells.count) { range in
+                    for k in range {
+                        let ci = Int(cells[k])
+                        let x = ci % W, y = ci / W
+                        let x0 = max(0, x - R), x1 = min(W, x + R + 1), y0 = max(0, y - R), y1 = min(Hh, y + R + 1)
+                        let a = y1 * IW + x1, b = y0 * IW + x0, cc = y0 * IW + x1, d = y1 * IW + x0
+                        let n = cn[a] + cn[b] - cn[cc] - cn[d]
+                        if n < 4 { continue }
+                        for ch in 0..<C {
+                            let m = (S1[a * C + ch] + S1[b * C + ch] - S1[cc * C + ch] - S1[d * C + ch]) / n
+                            let q = (S2[a * C + ch] + S2[b * C + ch] - S2[cc * C + ch] - S2[d * C + ch]) / n
+                            let sd = sqrt(max(q - m * m, 1))
+                            vp[ci * C + ch] = Float((Double(vp[ci * C + ch]) - m) / sd)
+                        }
+                    }
+                }
             }
-        }
+        } } }
     }
 
-    /// Fits y ≈ a·s + b·Σ₄ s_nbr + c·Σ_diag s_nbr per channel on hard decisions, then removes the
-    /// neighbour terms. Two passes so improved decisions refine the estimate.
+    /// Decision-feedback cancellation of blur from neighbouring cells: per channel, fit
+    /// v ≈ a·s + b·(sum of 4 edge neighbours' decisions) + c·(sum of 4 diagonal ones) by least
+    /// squares, then subtract the neighbours' contribution. Two passes.
     private func equalise(_ v: inout [Float], _ L: FrameLayout, _ C: Int) {
         let W = L.cols, H = L.rows
-        let isData = L.kind.map { $0 == .data }
+        let isData = L.isData
         let cells = L.dataCells
+        let K = cells.count
+        var sgn = [Float](repeating: 0, count: W * H * C)
+        var n4 = [Float](repeating: 0, count: K * C)
+        var nd = [Float](repeating: 0, count: K * C)
+        let chunk = 4096
+        let nChunks = (K + chunk - 1) / chunk
         for _ in 0..<2 {
-            var sgn = [Float](repeating: 0, count: W * H * C)
-            for c in cells { let ci = Int(c); for ch in 0..<C { sgn[ci * C + ch] = v[ci * C + ch] > 0 ? 1 : -1 } }
-            var n4 = [Float](repeating: 0, count: cells.count * C)
-            var nd = [Float](repeating: 0, count: cells.count * C)
-            for (k, c) in cells.enumerated() {
-                let ci = Int(c), x = ci % W, y = ci / W
+            v.withUnsafeMutableBufferPointer { V in sgn.withUnsafeMutableBufferPointer { S in
+            n4.withUnsafeMutableBufferPointer { N4 in nd.withUnsafeMutableBufferPointer { ND in
+            isData.withUnsafeBufferPointer { D in
+                let vp = V.baseAddress!, sp = S.baseAddress!, n4p = N4.baseAddress!, ndp = ND.baseAddress!, dp = D.baseAddress!
+                chunked(K, chunk) { range in
+                    for k in range { let ci = Int(cells[k]); for ch in 0..<C { sp[ci * C + ch] = vp[ci * C + ch] > 0 ? 1 : -1 } }
+                }
+                // neighbour sums, and per-chunk partial normal equations (9 sums per channel)
+                var partial = [Double](repeating: 0, count: nChunks * C * 9)
+                partial.withUnsafeMutableBufferPointer { P in
+                    let pp = P.baseAddress!
+                    let run: (Int) -> Void = { q in
+                        let acc = pp + q * C * 9
+                        for k in (q * chunk)..<min(K, (q + 1) * chunk) {
+                            let ci = Int(cells[k]), x = ci % W, y = ci / W
+                            let l = x > 0, r = x < W - 1, u = y > 0, dn = y < H - 1
+                            for ch in 0..<C {
+                                var a: Float = 0, d: Float = 0
+                                if l && dp[ci - 1] { a += sp[(ci - 1) * C + ch] }
+                                if r && dp[ci + 1] { a += sp[(ci + 1) * C + ch] }
+                                if u && dp[ci - W] { a += sp[(ci - W) * C + ch] }
+                                if dn && dp[ci + W] { a += sp[(ci + W) * C + ch] }
+                                if l && u && dp[ci - W - 1] { d += sp[(ci - W - 1) * C + ch] }
+                                if r && u && dp[ci - W + 1] { d += sp[(ci - W + 1) * C + ch] }
+                                if l && dn && dp[ci + W - 1] { d += sp[(ci + W - 1) * C + ch] }
+                                if r && dn && dp[ci + W + 1] { d += sp[(ci + W + 1) * C + ch] }
+                                n4p[k * C + ch] = a; ndp[k * C + ch] = d
+                                let f0 = Double(sp[ci * C + ch]), f1 = Double(a), f2 = Double(d), yv = Double(vp[ci * C + ch])
+                                let o = acc + ch * 9
+                                o[0] += f0 * f0; o[1] += f0 * f1; o[2] += f0 * f2
+                                o[3] += f1 * f1; o[4] += f1 * f2; o[5] += f2 * f2
+                                o[6] += f0 * yv; o[7] += f1 * yv; o[8] += f2 * yv
+                            }
+                        }
+                    }
+                    if concurrent && nChunks > 1 { DispatchQueue.concurrentPerform(iterations: nChunks, execute: run) } else { for q in 0..<nChunks { run(q) } }
+                }
                 for ch in 0..<C {
-                    var a: Float = 0, d: Float = 0
-                    if x > 0 && isData[ci - 1] { a += sgn[(ci - 1) * C + ch] }
-                    if x < W - 1 && isData[ci + 1] { a += sgn[(ci + 1) * C + ch] }
-                    if y > 0 && isData[ci - W] { a += sgn[(ci - W) * C + ch] }
-                    if y < H - 1 && isData[ci + W] { a += sgn[(ci + W) * C + ch] }
-                    if x > 0 && y > 0 && isData[ci - W - 1] { d += sgn[(ci - W - 1) * C + ch] }
-                    if x < W - 1 && y > 0 && isData[ci - W + 1] { d += sgn[(ci - W + 1) * C + ch] }
-                    if x > 0 && y < H - 1 && isData[ci + W - 1] { d += sgn[(ci + W - 1) * C + ch] }
-                    if x < W - 1 && y < H - 1 && isData[ci + W + 1] { d += sgn[(ci + W + 1) * C + ch] }
-                    n4[k * C + ch] = a; nd[k * C + ch] = d
+                    var t = [Double](repeating: 0, count: 9)
+                    for q in 0..<nChunks { for i in 0..<9 { t[i] += partial[(q * C + ch) * 9 + i] } }
+                    var M: [[Double]] = [[t[0], t[1], t[2], t[6]], [t[1], t[3], t[4], t[7]], [t[2], t[4], t[5], t[8]]]
+                    guard let sol = solve(&M, 3), sol[0] > 0.05 else { continue }
+                    let b = Float(sol[1]), cd = Float(sol[2]), a = Float(sol[0])
+                    if abs(b) < 0.01 && abs(cd) < 0.01 { continue }
+                    chunked(K, chunk) { range in
+                        for k in range {
+                            let i = Int(cells[k]) * C + ch
+                            vp[i] = (vp[i] - b * n4p[k * C + ch] - cd * ndp[k * C + ch]) / a
+                        }
+                    }
                 }
-            }
-            for ch in 0..<C {
-                // normal equations for [s, n4, nd]
-                var M = [[Double]](repeating: [Double](repeating: 0, count: 4), count: 3)
-                for (k, c) in cells.enumerated() {
-                    let ci = Int(c)
-                    let f = [Double(sgn[ci * C + ch]), Double(n4[k * C + ch]), Double(nd[k * C + ch])]
-                    let y = Double(v[ci * C + ch])
-                    for i in 0..<3 { for j in 0..<3 { M[i][j] += f[i] * f[j] }; M[i][3] += f[i] * y }
-                }
-                guard let sol = solve(&M, 3), sol[0] > 0.05 else { continue }
-                let b = Float(sol[1]), cd = Float(sol[2]), a = Float(sol[0])
-                if abs(b) < 0.01 && abs(cd) < 0.01 { continue }
-                for (k, c) in cells.enumerated() {
-                    let i = Int(c) * C + ch
-                    v[i] = (v[i] - b * n4[k * C + ch] - cd * nd[k * C + ch]) / a
-                }
-            }
+            } } } } }
         }
     }
 
     private func decorrelate(_ v: inout [Float], _ L: FrameLayout, _ C: Int) {
+        let cells = L.dataCells
+        let K = cells.count
+        if K == 0 { return }
+        let chunk = 8192
+        let nChunks = (K + chunk - 1) / chunk
         for _ in 0..<2 {
-            var A = [Double](repeating: 0, count: C * C)
-            var n = 0.0
-            for c in L.dataCells {
-                let ci = Int(c) * C
-                for a in 0..<C {
-                    for b in 0..<C {
-                        A[a * C + b] += Double(v[ci + a]) * (v[ci + b] > 0 ? 1 : -1)
+            // E[v_a · sign(v_b)] over all data cells, as per-chunk partial sums
+            var partial = [Double](repeating: 0, count: nChunks * C * C)
+            v.withUnsafeBufferPointer { V in partial.withUnsafeMutableBufferPointer { P in
+                let vp = V.baseAddress!, pp = P.baseAddress!
+                let run: (Int) -> Void = { q in
+                    let acc = pp + q * C * C
+                    for k in (q * chunk)..<min(K, (q + 1) * chunk) {
+                        let ci = Int(cells[k]) * C
+                        for a in 0..<C {
+                            for b in 0..<C { acc[a * C + b] += Double(vp[ci + a]) * (vp[ci + b] > 0 ? 1 : -1) }
+                        }
                     }
                 }
-                n += 1
-            }
-            if n == 0 { return }
-            A = A.map { $0 / n }
+                if concurrent && nChunks > 1 { DispatchQueue.concurrentPerform(iterations: nChunks, execute: run) } else { for q in 0..<nChunks { run(q) } }
+            } }
+            var A = [Double](repeating: 0, count: C * C)
+            for q in 0..<nChunks { for i in 0..<(C * C) { A[i] += partial[q * C * C + i] } }
+            A = A.map { $0 / Double(K) }
             var inv: [Double]
             if C == 2 {
                 let det = A[0] * A[3] - A[1] * A[2]
@@ -487,15 +542,24 @@ public final class FrameDecoder {
             for a in 0..<C { for b in 0..<C where a != b { off += abs(A[a * C + b]) } }
             if off < 0.02 { return }
             let fi = inv.map { Float($0) }
-            var tmp = [Float](repeating: 0, count: C)
-            for c in L.dataCells {
-                let ci = Int(c) * C
-                for a in 0..<C {
-                    var s: Float = 0
-                    for b in 0..<C { s += fi[a * C + b] * v[ci + b] }
-                    tmp[a] = s
+            v.withUnsafeMutableBufferPointer { V in
+                let vp = V.baseAddress!
+                chunked(K, chunk) { range in
+                    var tmp = (Float(0), Float(0), Float(0))
+                    for k in range {
+                        let ci = Int(cells[k]) * C
+                        if C == 2 {
+                            tmp.0 = fi[0] * vp[ci] + fi[1] * vp[ci + 1]
+                            tmp.1 = fi[2] * vp[ci] + fi[3] * vp[ci + 1]
+                            vp[ci] = tmp.0; vp[ci + 1] = tmp.1
+                        } else {
+                            tmp.0 = fi[0] * vp[ci] + fi[1] * vp[ci + 1] + fi[2] * vp[ci + 2]
+                            tmp.1 = fi[3] * vp[ci] + fi[4] * vp[ci + 1] + fi[5] * vp[ci + 2]
+                            tmp.2 = fi[6] * vp[ci] + fi[7] * vp[ci + 1] + fi[8] * vp[ci + 2]
+                            vp[ci] = tmp.0; vp[ci + 1] = tmp.1; vp[ci + 2] = tmp.2
+                        }
+                    }
                 }
-                for a in 0..<C { v[ci + a] = tmp[a] }
             }
         }
     }

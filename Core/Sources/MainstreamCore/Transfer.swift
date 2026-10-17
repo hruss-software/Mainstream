@@ -15,38 +15,59 @@ public struct Payload: Sendable {
     }
 }
 
+// Meta symbol: [0] format (1 raw, 2 packed) [1] kind [2-5] sent length [6-7] k [8-9] blocks
+// [10-13] crc32 of the sent bytes; raw: [14] name length [15...] name;
+// packed: [14] packing [15-18] original length [19] name length [20...] name.
 struct Meta: Equatable {
     var kind: PayloadKind
     var plan: BlockPlan
     var crc: UInt32
     var name: String
+    var packing: Packing = .none
+    var originalLength = 0
 
     func encode() -> [UInt8] {
         var b = [UInt8](repeating: 0, count: Wire.symbolSize)
-        b[0] = 1
+        let packed = packing != .none
+        b[0] = packed ? 2 : 1
         b[1] = kind.rawValue
         put32(&b, 2, UInt32(plan.length))
         put16(&b, 6, UInt16(plan.k))
         put16(&b, 8, UInt16(plan.blockCount))
         put32(&b, 10, crc)
-        var nameBytes = Array(name.utf8.prefix(Wire.symbolSize - 15))
+        var o = 14
+        if packed {
+            b[14] = packing.rawValue
+            put32(&b, 15, UInt32(originalLength))
+            o = 19
+        }
+        var nameBytes = Array(name.utf8.prefix(Wire.symbolSize - o - 1))
         while String(bytes: nameBytes, encoding: .utf8) == nil && !nameBytes.isEmpty { nameBytes.removeLast() }
-        b[14] = UInt8(nameBytes.count)
-        for (i, c) in nameBytes.enumerated() { b[15 + i] = c }
+        b[o] = UInt8(nameBytes.count)
+        for (i, c) in nameBytes.enumerated() { b[o + 1 + i] = c }
         return b
     }
 
     static func decode(_ b: UnsafePointer<UInt8>) -> Meta? {
-        guard b[0] == 1, let kind = PayloadKind(rawValue: b[1]) else { return nil }
+        guard b[0] == 1 || b[0] == 2, let kind = PayloadKind(rawValue: b[1]) else { return nil }
         let len = Int(get32(b, 2))
         let k = Int(get16(b, 6))
         let blocks = Int(get16(b, 8))
         let plan = BlockPlan(length: len, blockCount: blocks, k: k)
         guard plan.isValid else { return nil }
-        let nl = Int(b[14])
-        guard nl <= Wire.symbolSize - 15 else { return nil }
-        let name = String(decoding: UnsafeBufferPointer(start: b + 15, count: nl), as: UTF8.self)
-        return Meta(kind: kind, plan: plan, crc: get32(b, 10), name: name)
+        var o = 14
+        var packing = Packing.none, original = len
+        if b[0] == 2 {
+            guard let p = Packing(rawValue: b[14]), p != .none else { return nil }
+            packing = p
+            original = Int(get32(b, 15))
+            guard original > 0 && original <= Packing.maxExpanded else { return nil }
+            o = 19
+        }
+        let nl = Int(b[o])
+        guard nl <= Wire.symbolSize - o - 1 else { return nil }
+        let name = String(decoding: UnsafeBufferPointer(start: b + o + 1, count: nl), as: UTF8.self)
+        return Meta(kind: kind, plan: plan, crc: get32(b, 10), name: name, packing: packing, originalLength: original)
     }
 }
 
@@ -105,12 +126,19 @@ public final class TransferEncoder {
     private var counter = 0
     private var frameIndex = 0
 
-    public init(payload: Payload, session: UInt16 = UInt16.random(in: 1...UInt16.max)) {
+    /// Bytes actually sent (after compression).
+    public let sentBytes: Int
+
+    public init(payload: Payload, session: UInt16 = UInt16.random(in: 1...UInt16.max), compress: Bool = true) {
         self.payload = payload
         self.session = session
-        let bytes = [UInt8](payload.data)
+        let original = [UInt8](payload.data)
+        let packed = compress ? Packing.pack(original) : nil
+        let bytes = packed?.1 ?? original
+        sentBytes = bytes.count
         fountain = FountainEncoder(data: bytes, session: session)
-        meta = Meta(kind: payload.kind, plan: fountain.plan, crc: CRC32.compute(bytes), name: payload.name).encode()
+        meta = Meta(kind: payload.kind, plan: fountain.plan, crc: CRC32.compute(bytes), name: payload.name,
+                    packing: packed?.0 ?? .none, originalLength: original.count).encode()
     }
 
     public var plan: BlockPlan { fountain.plan }
@@ -197,15 +225,18 @@ public final class TransferDecoder {
         var bytes = [UInt8]()
         bytes.reserveCapacity(meta.plan.totalSymbols * Wire.symbolSize)
         for b in blocks { bytes += b.solved ?? [] }
-        bytes.removeLast(bytes.count - meta.plan.length)
         blocks = []
-        if CRC32.compute(bytes) == meta.crc {
-            if let s = session { completedSessions.insert(s) }
-            result = Payload(kind: meta.kind, name: meta.name, data: Data(bytes))
-        } else {
-            self.meta = nil
-            session = nil
+        // a wrong length, checksum or unpacking means a corrupt transfer: start this session over
+        if bytes.count >= meta.plan.length {
+            bytes.removeLast(bytes.count - meta.plan.length)
+            if CRC32.compute(bytes) == meta.crc, let data = meta.packing.unpack(bytes, length: meta.originalLength) {
+                if let s = session { completedSessions.insert(s) }
+                result = Payload(kind: meta.kind, name: meta.name, data: Data(data))
+                return
+            }
         }
+        self.meta = nil
+        session = nil
     }
 
     public func takeResult() -> Payload? {

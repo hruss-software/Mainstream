@@ -13,15 +13,21 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Shared
     dependencies:
       - package: MainstreamCore
         product: MainstreamCore
+      - target: MainstreamShare
+    entitlements:
+      path: Mainstream.entitlements
+      properties:
+        com.apple.developer.networking.HotspotConfiguration: true
     settings:
       base:
         PRODUCT_NAME: Mainstream
         PRODUCT_BUNDLE_IDENTIFIER: com.local.mainstream
-        MARKETING_VERSION: "2.0"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "2.1"
+        CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
@@ -29,6 +35,9 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Mainstream
         INFOPLIST_KEY_NSCameraUsageDescription: Receives data shown on another screen and takes photos to send.
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Records audio to send.
+        INFOPLIST_KEY_NSContactsUsageDescription: Adds contacts you receive.
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Saves photos and videos you receive.
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: Sends your current location when you choose to.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
@@ -36,6 +45,40 @@ targets:
         INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleLightContent
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
+  MainstreamShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Share
+      - Shared
+    dependencies:
+      - package: MainstreamCore
+        product: MainstreamCore
+    info:
+      path: Share/Info.plist
+      properties:
+        CFBundleDisplayName: Mainstream
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 1
+              NSExtensionActivationSupportsMovieWithMaxCount: 1
+              NSExtensionActivationSupportsFileWithMaxCount: 1
+              NSExtensionActivationSupportsAttachmentsWithMaxCount: 1
+    settings:
+      base:
+        PRODUCT_NAME: MainstreamShare
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.mainstream.share
+        MARKETING_VERSION: "2.1"
+        CURRENT_PROJECT_VERSION: "3"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_STYLE: Automatic
 schemes:
   Mainstream:
     build:

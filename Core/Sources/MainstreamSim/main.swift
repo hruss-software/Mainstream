@@ -58,6 +58,31 @@ if let path = env["DECODE"] {
     }
     exit(0)
 }
+// Render and decode timing per level (4K capture), to see what keeps up with 60 fps.
+if env["BENCH"] != nil {
+    let enc = TransferEncoder(payload: payload)
+    let fd = FrameDecoder()
+    for li in [4, 8, 10, 12, 14] {
+        guard let fit = Ladder.fit(level: li, width: availW, height: availH) else { continue }
+        let L = FrameLayout.get(level: li, aspect: fit.aspect)
+        var tr = 0.0, td = 0.0, ok = 0
+        let n = 8
+        for i in 0..<n {
+            let t0 = Date()
+            let fr = Renderer.frame(enc, layout: L)
+            tr += Date().timeIntervalSince(t0)
+            let scr = Channel.screen(layout: L, frame: fr, cellPx: fit.cellPx, screenW: screenW, screenH: screenH)
+            var p = ChannelParams(); p.seed = UInt64(i + 1)
+            let cam = Channel.capture(scr, p)
+            let t1 = Date()
+            let (_, st) = cam.withUnsafeBufferPointer { fd.decode(BGRAFrame(base: $0.baseAddress!, width: p.camW, height: p.camH, bytesPerRow: p.camW * 4)) }
+            td += Date().timeIntervalSince(t1)
+            if st.decoded == st.slots { ok += 1 }
+        }
+        print(String(format: "L%2d render %5.1f ms  decode %5.1f ms  ok %d/%d", li, tr / Double(n) * 1000, td / Double(n) * 1000, ok, n))
+    }
+    exit(0)
+}
 if env["TEMPORAL"] != nil {
     let levels = (env["LEVELS"] ?? "6,8,10,12").split(separator: ",").map { Int($0)! }
     let holds = (env["HOLDS"] ?? "1,2,3,4").split(separator: ",").map { Int($0)! }
@@ -138,9 +163,7 @@ func temporal(level li: Int, hold: Int, procFps: Double, cond c: Cond, duration:
     while t < duration + T {
         let kmin = max(0, Int(floor((t - T) / HT)))
         let kmax = Int(floor((t + readout + exposure) / HT)) + 1
-        let t0 = Date()
         let frames = (kmin...kmax).map { screen($0) }
-        let t1 = Date()
         var p = ChannelParams()
         p.camW = camW; p.camH = camH
         p.blur = c.blur * Double(camW) / 3840; p.noise = c.noise; p.fill = c.fill; p.crosstalk = c.ct; p.tilt = c.tilt
@@ -153,11 +176,9 @@ func temporal(level li: Int, hold: Int, procFps: Double, cond c: Cond, duration:
             let w = Float(max(0, min(1, (a + exposure - s) / exposure)))
             return (k - kmin, w)
         }
-        let t2 = Date()
         let (pk, _) = cam.withUnsafeBufferPointer {
             fd.decode(BGRAFrame(base: $0.baseAddress!, width: camW, height: camH, bytesPerRow: camW * 4))
         }
-        if env["PROFILE"] != nil { print(String(format: "render %.2fs capture %.2fs decode %.3fs", t1.timeIntervalSince(t0), t2.timeIntervalSince(t1), Date().timeIntervalSince(t2))) }
         for q in pk where q.type == .data { seen.insert(q.block << 16 | q.id) }
         decodedSum += pk.count
         captures += 1

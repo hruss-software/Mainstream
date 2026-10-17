@@ -18,8 +18,15 @@ final class Receiver: NSObject, ObservableObject {
     @Published var received: Received?
     @Published private(set) var multiCam = false
     @Published private(set) var dualActive = false
+    /// Focus slider value: 0 (closest the main camera goes) … 1 (far); below 0 is macro, on the
+    /// ultra-wide camera, when the phone has one that focuses closer.
     @Published var lensPosition: Float = 0.5
     @Published private(set) var manualFocus = false
+    @Published private(set) var macroAvailable = false
+    @Published private(set) var zoom: CGFloat = 1
+    @Published private(set) var maxZoom: CGFloat = 1
+    static let macroRange: Float = 0.6        // slider span below 0
+    static let macroLensAtZero: Float = 0.45  // ultra-wide lens position matching the main camera's closest
 
     static var multiCamSupported: Bool { AVCaptureMultiCamSession.isMultiCamSupported }
 
@@ -36,8 +43,13 @@ final class Receiver: NSObject, ObservableObject {
     private var wantMulti = false
     private var pressureWatch: [NSKeyValueObservation] = []
     private var lastRestart: TimeInterval = 0
-    /// main thread: the camera the focus slider follows
+    private var macroDevice: AVCaptureDevice?   // single-camera mode: the ultra-wide, if it focuses closer
+    private var mainDevice: AVCaptureDevice?
+    private var inMacro = false
+    private var zoomFactor: CGFloat = 1
+    /// main thread: the camera the focus slider follows, and whether it is the macro camera
     private var focusDevice: AVCaptureDevice?
+    private var focusIsMacro = false
 
     // shared decode state (ingestQueue only)
     fileprivate let ingestQueue = DispatchQueue(label: "mainstream.ingest", qos: .userInteractive)
@@ -155,8 +167,24 @@ final class Receiver: NSObject, ObservableObject {
 
     private func setDevices(_ d: [AVCaptureDevice]) {
         devices = d
-        let first = d.first
-        DispatchQueue.main.async { self.focusDevice = first }
+        let first = d.first, macro = inMacro
+        let top = d.map { min(8, $0.maxAvailableVideoZoomFactor / (macro && $0 == macroDevice ? 2 : 1)) }.min() ?? 1
+        zoomFactor = min(zoomFactor, max(1, top))
+        let z = zoomFactor
+        DispatchQueue.main.async {
+            self.focusDevice = first
+            self.focusIsMacro = macro
+            self.maxZoom = max(1, top)
+            self.zoom = z
+        }
+    }
+
+    /// The ultra-wide camera, if its lens can be driven and it focuses closer than `main`.
+    private static func macroCandidate(closerThan main: AVCaptureDevice) -> AVCaptureDevice? {
+        guard let uw = AVCaptureDevice.default(.builtInUltraWideCamera, for: .video, position: .back),
+              uw.isLockingFocusWithCustomLensPositionSupported, uw.minimumFocusDistance > 0,
+              main.minimumFocusDistance <= 0 || uw.minimumFocusDistance < main.minimumFocusDistance else { return nil }
+        return uw
     }
 
     private func buildSingle() {
@@ -167,7 +195,7 @@ final class Receiver: NSObject, ObservableObject {
         s.beginConfiguration()
         s.sessionPreset = .inputPriority
         if s.canAddInput(input) { s.addInput(input) }
-        let pipe = CameraPipe(owner: self, index: 0)
+        let pipe = CameraPipe(owner: self, index: 0, workers: 3)
         let out = pipe.makeOutput()
         if s.canAddOutput(out) { s.addOutput(out) }
         if let c = out.connection(with: .video), c.isVideoStabilizationSupported { c.preferredVideoStabilizationMode = .off }
@@ -176,10 +204,54 @@ final class Receiver: NSObject, ObservableObject {
         s.commitConfiguration()
         _ = configure(device, formats: device.formats, cost: nil)
         session = s
+        mainDevice = device
+        macroDevice = Receiver.macroCandidate(closerThan: device)
+        inMacro = false
         setDevices([device])
+        applyZoom()
         pipes = [pipe]
         preview.session = s
         pipPreview.session = nil
+        let macro = macroDevice != nil
+        DispatchQueue.main.async { self.macroAvailable = macro }
+    }
+
+    /// sessionQueue, single-camera session: move between the main and the macro camera.
+    private func switchCamera(toMacro macro: Bool) {
+        guard macro != inMacro, let s = session, !(s is AVCaptureMultiCamSession),
+              let dev = macro ? macroDevice : mainDevice, let input = try? AVCaptureDeviceInput(device: dev) else { return }
+        s.beginConfiguration()
+        for i in s.inputs { s.removeInput(i) }
+        guard s.canAddInput(input) else {
+            if let back = macro ? mainDevice : macroDevice, let bi = try? AVCaptureDeviceInput(device: back), s.canAddInput(bi) { s.addInput(bi) }
+            s.commitConfiguration()
+            return
+        }
+        s.addInput(input)
+        for o in s.outputs { if let c = o.connection(with: .video), c.isVideoStabilizationSupported { c.preferredVideoStabilizationMode = .off } }
+        s.commitConfiguration()
+        _ = configure(dev, formats: dev.formats, cost: nil)
+        inMacro = macro
+        setDevices([dev])
+        applyZoom()
+        pressureWatch.forEach { $0.invalidate() }
+        pressureWatch = [dev.observe(\.systemPressureState, options: [.new]) { [weak self] d, _ in
+            let level = d.systemPressureState.level
+            self?.sessionQueue.async { self?.pressureChanged(d, level) }
+        }]
+        DispatchQueue.main.async {
+            if let c = self.preview.connection, c.isVideoRotationAngleSupported(90) { c.videoRotationAngle = 90 }
+        }
+    }
+
+    /// sessionQueue: zoom every active camera; the macro camera is cropped 2× more so its much
+    /// wider view matches the main camera's.
+    private func applyZoom() {
+        for d in devices where (try? d.lockForConfiguration()) != nil {
+            let z = zoomFactor * (inMacro && d == macroDevice ? 2 : 1)
+            d.videoZoomFactor = max(d.minAvailableVideoZoomFactor, min(d.maxAvailableVideoZoomFactor, z))
+            d.unlockForConfiguration()
+        }
     }
 
     /// Wide + ultra-wide (or telephoto) running together; both feed one transfer. Returns false,
@@ -203,7 +275,7 @@ final class Receiver: NSObject, ObservableObject {
             guard let input = try? AVCaptureDeviceInput(device: dev), s.canAddInput(input) else { ok = false; break }
             s.addInputWithNoConnections(input)
             guard let port = input.ports(for: .video, sourceDeviceType: dev.deviceType, sourceDevicePosition: .back).first else { ok = false; break }
-            let pipe = CameraPipe(owner: self, index: i)
+            let pipe = CameraPipe(owner: self, index: i, workers: 2)
             let out = pipe.makeOutput()
             guard s.canAddOutput(out) else { ok = false; break }
             s.addOutputWithNoConnections(out)
@@ -246,9 +318,15 @@ final class Receiver: NSObject, ObservableObject {
             return false
         }
         session = s
+        mainDevice = wide
+        macroDevice = nil
+        inMacro = false
         setDevices([wide, second])
+        applyZoom()
         pipes = newPipes
         photoOutput = photo
+        let macro = second.deviceType == .builtInUltraWideCamera && Receiver.macroCandidate(closerThan: wide) != nil
+        DispatchQueue.main.async { self.macroAvailable = macro }
         return true
     }
 
@@ -336,21 +414,37 @@ final class Receiver: NSObject, ObservableObject {
         }
     }
 
-    /// Manual lens position 0 (closest) … 1 (farthest).
+    /// Manual focus from the slider: 0 (main camera's closest) … 1 (far). Below 0 continues on
+    /// the ultra-wide camera, which focuses much closer.
     func setLens(_ v: Float) {
         manualFocus = true
         lensPosition = v
         sessionQueue.async { [self] in
+            if macroDevice != nil { switchCamera(toMacro: v < 0) }
+            // slider below 0 → ultra-wide lens from its main-camera-equivalent position down to its closest
+            let macroLens = max(0, Receiver.macroLensAtZero * (v + Receiver.macroRange) / Receiver.macroRange)
             for d in devices where d.isLockingFocusWithCustomLensPositionSupported && (try? d.lockForConfiguration()) != nil {
-                d.setFocusModeLocked(lensPosition: v)
+                let ultra = d.deviceType == .builtInUltraWideCamera
+                d.setFocusModeLocked(lensPosition: v < 0 ? (ultra ? macroLens : 0) : v)
                 d.unlockForConfiguration()
             }
+        }
+    }
+
+    /// Zoom, 1× = the main camera's normal view (main thread).
+    func setZoom(_ z: CGFloat) {
+        let c = max(1, min(maxZoom, z))
+        zoom = c
+        sessionQueue.async { [self] in
+            zoomFactor = c
+            applyZoom()
         }
     }
 
     func continuousFocus() {
         manualFocus = false
         sessionQueue.async { [self] in
+            switchCamera(toMacro: false)
             for d in devices where (try? d.lockForConfiguration()) != nil {
                 if d.isFocusPointOfInterestSupported { d.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5) }
                 if d.isFocusModeSupported(.continuousAutoFocus) { d.focusMode = .continuousAutoFocus }
@@ -419,20 +513,30 @@ final class Receiver: NSObject, ObservableObject {
             self.active = isActive
             self.locked = isLocked
             self.hint = h
-            if !self.manualFocus, let d = self.focusDevice { self.lensPosition = d.lensPosition }
+            if !self.manualFocus, let d = self.focusDevice {
+                self.lensPosition = self.focusIsMacro
+                    ? min(0, d.lensPosition / Receiver.macroLensAtZero * Receiver.macroRange - Receiver.macroRange)
+                    : d.lensPosition
+            }
         }
     }
 }
 
 /// One camera's decode path.
+/// One camera's decode path. Frames are decoded by a small pool so a slow frame doesn't make
+/// the camera drop the next ones; when every decoder is busy the new frame is skipped.
 private final class CameraPipe: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     weak var owner: Receiver?
     let queue: DispatchQueue
-    private let decoder = FrameDecoder()
+    private let decodeQueue: DispatchQueue
+    private let lock = NSLock()
+    private var idle: [FrameDecoder]
 
-    init(owner: Receiver, index: Int) {
+    init(owner: Receiver, index: Int, workers: Int) {
         self.owner = owner
         queue = DispatchQueue(label: "mainstream.video.\(index)", qos: .userInteractive)
+        decodeQueue = DispatchQueue(label: "mainstream.decode.\(index)", qos: .userInteractive, attributes: .concurrent)
+        idle = (0..<workers).map { _ in FrameDecoder() }
     }
 
     func makeOutput() -> AVCaptureVideoDataOutput {
@@ -444,16 +548,24 @@ private final class CameraPipe: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let owner, let pb = CMSampleBufferGetImageBuffer(sb) else { return }
-        CVPixelBufferLockBaseAddress(pb, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
-        let f = BGRAFrame(base: base.assumingMemoryBound(to: UInt8.self), width: CVPixelBufferGetWidth(pb),
-                          height: CVPixelBufferGetHeight(pb), bytesPerRow: CVPixelBufferGetBytesPerRow(pb))
-        let (packets, stats) = decoder.decode(f)
-        let ok = stats.slots > 0 ? Double(stats.decoded) / Double(stats.slots) : 0
-        let load = stats.decoded > 0 ? Double(stats.corrections) / Double(stats.decoded) / Double(max(1, stats.parity / 2)) : 1
-        owner.ingestQueue.async { owner.absorb(packets, found: stats.found, ok: ok, load: load) }
+        guard owner != nil else { return }
+        lock.lock()
+        let decoder = idle.popLast()
+        lock.unlock()
+        guard let decoder else { return }
+        decodeQueue.async { [weak self] in
+            defer { self?.lock.lock(); self?.idle.append(decoder); self?.lock.unlock() }
+            guard let owner = self?.owner, let pb = CMSampleBufferGetImageBuffer(sb) else { return }
+            CVPixelBufferLockBaseAddress(pb, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+            guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
+            let f = BGRAFrame(base: base.assumingMemoryBound(to: UInt8.self), width: CVPixelBufferGetWidth(pb),
+                              height: CVPixelBufferGetHeight(pb), bytesPerRow: CVPixelBufferGetBytesPerRow(pb))
+            let (packets, stats) = decoder.decode(f)
+            let ok = stats.slots > 0 ? Double(stats.decoded) / Double(stats.slots) : 0
+            let load = stats.decoded > 0 ? Double(stats.corrections) / Double(stats.decoded) / Double(max(1, stats.parity / 2)) : 1
+            owner.ingestQueue.async { owner.absorb(packets, found: stats.found, ok: ok, load: load) }
+        }
     }
 }
 

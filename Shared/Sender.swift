@@ -178,11 +178,38 @@ struct VisibleSender: View {
     let onClose: () -> Void
     @AppStorage("level") private var level = Ladder.defaultIndex
     @AppStorage("hold") private var hold = 1
+    @AppStorage("compressMedia") private var compressMedia = true
+    @State private var small: Payload?        // compressed photo or video, when it is smaller
+    @State private var ready = false
+
+    private var sending: Payload { compressMedia ? (small ?? payload) : payload }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack { CloseButton(action: onClose); Spacer() }
-            CodeViewRep(payload: payload, level: level, hold: hold)
+            HStack(spacing: 12) {
+                CloseButton(action: onClose)
+                Spacer()
+                if small != nil {
+                    // send the smaller re-encoded photo/video, or the original
+                    Button { compressMedia.toggle() } label: {
+                        Image(systemName: compressMedia ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 40, height: 36)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(compressMedia ? Color.accentColor : .secondary)
+                }
+                Text(sizeText(Double(sending.data.count)))
+                    .font(.system(size: 14, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 16)
+            }
+            if ready {
+                CodeViewRep(payload: sending, level: level, hold: hold)
+                    .id(compressMedia && small != nil)      // a different payload is a new transfer
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             VStack(spacing: 6) {
                 IconSlider(value: Binding(get: { Double(level) }, set: { level = Int($0) }),
                            range: 0...Double(Ladder.levels.count - 1), low: "square.grid.2x2", high: "square.grid.4x3.fill")
@@ -196,5 +223,9 @@ struct VisibleSender: View {
         }
         .background(Color.white.ignoresSafeArea())
         .environment(\.colorScheme, .light)
+        .task {
+            small = await PayloadPrep.compressed(payload)
+            ready = true
+        }
     }
 }

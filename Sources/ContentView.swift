@@ -18,12 +18,20 @@ struct ContentView: View {
     @State private var importing = false
     @State private var photo: PhotosPickerItem?
     @State private var flash = false
+    @State private var pinchBase: CGFloat = 1
+    @State private var more = false
+    @State private var pickingContact = false
+    @State private var composingWiFi = false
+    @StateObject private var locator = LocationFetcher()
     @Environment(\.scenePhase) private var phase
 
     var body: some View {
         ZStack {
-            CameraPreview(layer: rx.preview) { rx.focus(atLayerPoint: $0) }
-                .ignoresSafeArea()
+            CameraPreview(layer: rx.preview, onTap: { rx.focus(atLayerPoint: $0) }, onPinch: { scale, state in
+                if state == .began { pinchBase = rx.zoom }
+                rx.setZoom(pinchBase * scale)
+            })
+            .ignoresSafeArea()
             Color.black.opacity(rx.locked ? 0 : 0.25)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
@@ -50,14 +58,25 @@ struct ContentView: View {
                 }
                 .padding(.trailing, 12)
                 Spacer()
-                HStack(spacing: 26) {
-                    Button { composing = true } label: { icon("textformat") }
-                    PhotosPicker(selection: $photo, matching: .images) { icon("photo") }
-                    Button { shoot() } label: { icon("camera") }
-                    Button { recording = true } label: { icon("mic") }
-                    Button { importing = true } label: { icon("doc") }
+                HStack(spacing: 24) {
+                    if more {
+                        Button { more = false } label: { icon("chevron.left") }
+                        Button { pickingContact = true } label: { icon("person.crop.circle") }
+                        Button { composingWiFi = true } label: { icon("wifi") }
+                        Button { locator.fetch { send($0) } } label: {
+                            if locator.busy { ProgressView().frame(width: 30, height: 30) } else { icon("location") }
+                        }
+                    } else {
+                        Button { composing = true } label: { icon("textformat") }
+                        PhotosPicker(selection: $photo, matching: .any(of: [.images, .videos])) { icon("photo") }
+                        Button { shoot() } label: { icon("camera") }
+                        Button { recording = true } label: { icon("mic") }
+                        Button { importing = true } label: { icon("doc") }
+                        Button { more = true } label: { icon("ellipsis") }
+                    }
                 }
-                .padding(.horizontal, 24)
+                .animation(.easeInOut(duration: 0.18), value: more)
+                .padding(.horizontal, 22)
                 .padding(.vertical, 16)
                 .background(.ultraThinMaterial, in: Capsule())
                 .padding(.bottom, 12)
@@ -67,8 +86,12 @@ struct ContentView: View {
         .onAppear {
             rx.setMultiCam(multiCam)
             rx.start()
-            if let i = CommandLine.arguments.firstIndex(of: "-demoSend"), i + 1 < CommandLine.arguments.count {
-                outgoing = Outgoing(payload: Payload(kind: .text, name: "text.txt", data: Data(CommandLine.arguments[i + 1].utf8)))
+            let args = CommandLine.arguments
+            if let i = args.firstIndex(of: "-demoSend"), i + 1 < args.count {
+                outgoing = Outgoing(payload: Payload(kind: .text, name: "text.txt", data: Data(args[i + 1].utf8)))
+            }
+            if let i = args.firstIndex(of: "-demoReceive"), i + 1 < args.count {
+                rx.received = Received(payload: Payload(kind: .text, name: "text.txt", data: Data(args[i + 1].utf8)))
             }
         }
         .onChange(of: phase) { _, p in
@@ -82,14 +105,16 @@ struct ContentView: View {
             guard let item else { return }
             Task {
                 if let data = try? await item.loadTransferable(type: Data.self) {
-                    let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
-                    send(Payload(kind: .image, name: "image.\(ext)", data: data))
+                    let type = item.supportedContentTypes.first
+                    let video = type?.conforms(to: .movie) == true
+                    let ext = type?.preferredFilenameExtension ?? (video ? "mov" : "jpg")
+                    send(Payload(kind: video ? .file : .image, name: (video ? "video." : "image.") + ext, data: data))
                 }
                 photo = nil
             }
         }
         .sheet(isPresented: $composing) {
-            TextComposer { send(Payload(kind: .text, name: "text.txt", data: Data($0.utf8))) }
+            TextComposer(onSend: { send(Payload(kind: .text, name: "text.txt", data: Data($0.utf8))) }, onSendPayload: { send($0) })
         }
         .sheet(isPresented: $recording, onDismiss: { if outgoing == nil { rx.start() } }) {
             AudioRecorderView { url in
@@ -100,14 +125,20 @@ struct ContentView: View {
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
             guard case .success(let url) = result else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            if let d = try? Data(contentsOf: url) {
-                let t = UTType(filenameExtension: url.pathExtension)
-                let kind: PayloadKind = t?.conforms(to: .audio) == true ? .audio : t?.conforms(to: .image) == true ? .image : .file
-                send(Payload(kind: kind, name: url.lastPathComponent, data: d))
+            // read off the main thread: files can be large
+            Task.detached {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                guard let d = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
+                let p = Payload(kind: PayloadPrep.kind(forName: url.lastPathComponent), name: url.lastPathComponent, data: d)
+                await MainActor.run { send(p) }
             }
         }
+        .sheet(isPresented: $pickingContact) {
+            ContactPicker { p in DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { send(p) } }
+                .ignoresSafeArea()
+        }
+        .sheet(isPresented: $composingWiFi) { WiFiComposer { send($0) } }
         .fullScreenCover(item: $outgoing, onDismiss: { rx.start() }) { o in
             VisibleSender(payload: o.payload) { outgoing = nil }
             .statusBarHidden()
@@ -144,19 +175,37 @@ struct ContentView: View {
     }
 }
 
-/// Vertical focus slider (top = far), auto-focus reset, and multi-camera toggle.
+/// Zoom, vertical focus slider (top = far; below the main camera's closest it switches to the
+/// macro camera, when there is one), auto-focus reset, and multi-camera toggle.
 struct CameraControls: View {
     @ObservedObject var rx: Receiver
     @Binding var multiCam: Bool
 
+    private var zoomLabel: String {
+        rx.zoom < 9.95 ? String(format: rx.zoom.truncatingRemainder(dividingBy: 1) < 0.05 ? "%.0f×" : "%.1f×", rx.zoom) : String(format: "%.0f×", rx.zoom)
+    }
+
     var body: some View {
         VStack(spacing: 10) {
+            Button {
+                // 1× → 2× → 4× → 1×, within what the camera allows
+                let next = [2.0, 4.0].first { $0 > rx.zoom + 0.05 && $0 <= rx.maxZoom } ?? 1
+                rx.setZoom(next)
+            } label: {
+                Text(zoomLabel)
+                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(rx.zoom > 1.01 ? .yellow : .white)
+                    .frame(width: 36, height: 30)
+            }
+            .disabled(rx.maxZoom <= 1)
             Image(systemName: "mountain.2").font(.system(size: 13))
-            Slider(value: Binding(get: { Double(rx.lensPosition) }, set: { rx.setLens(Float($0)) }), in: 0...1)
+            Slider(value: Binding(get: { Double(rx.lensPosition) }, set: { rx.setLens(Float($0)) }),
+                   in: (rx.macroAvailable ? -Double(Receiver.macroRange) : 0)...1)
                 .frame(width: 190)
                 .rotationEffect(.degrees(-90))
                 .frame(width: 30, height: 190)
             Image(systemName: "camera.macro").font(.system(size: 13))
+                .foregroundStyle(rx.lensPosition < 0 ? .yellow : .white.opacity(0.85))
             Button { rx.continuousFocus() } label: {
                 Image(systemName: "viewfinder")
                     .font(.system(size: 17, weight: .medium))
@@ -194,13 +243,6 @@ enum Brightness {
         s.brightness = v
         saved = nil
     }
-}
-
-/// Bytes per second as a short label: 820 B/s, 2.4 kB/s, 1.3 MB/s.
-func rateText(_ bps: Double) -> String {
-    if bps < 999.5 { return "\(Int(bps.rounded())) B/s" }
-    if bps < 999_500 { return String(format: bps < 9_950 ? "%.1f kB/s" : "%.0f kB/s", bps / 1000) }
-    return String(format: "%.1f MB/s", bps / 1_000_000)
 }
 
 /// Always-visible receive status: progress ring with percentage, live rate, and a chevron when a
@@ -243,14 +285,17 @@ struct ReceiveGauge: View {
     }
 }
 
-/// Hosts the receiver's preview layer; taps focus at that point.
+/// Hosts the receiver's preview layer; taps focus at that point, pinches zoom.
 struct CameraPreview: UIViewRepresentable {
     let layer: AVCaptureVideoPreviewLayer
     let onTap: (CGPoint) -> Void
+    let onPinch: (CGFloat, UIGestureRecognizer.State) -> Void
 
     final class Host: UIView {
         var preview: AVCaptureVideoPreviewLayer?
         var onTap: ((CGPoint) -> Void)?
+        var onPinch: ((CGFloat, UIGestureRecognizer.State) -> Void)?
+        @objc func pinched(_ g: UIPinchGestureRecognizer) { onPinch?(g.scale, g.state) }
         override func layoutSubviews() {
             super.layoutSubviews()
             CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -277,12 +322,18 @@ struct CameraPreview: UIViewRepresentable {
         v.backgroundColor = .black
         v.preview = layer
         v.onTap = onTap
+        v.onPinch = onPinch
         v.layer.addSublayer(layer)
         v.addGestureRecognizer(UITapGestureRecognizer(target: v, action: #selector(Host.tapped(_:))))
+        v.addGestureRecognizer(UIPinchGestureRecognizer(target: v, action: #selector(Host.pinched(_:))))
         return v
     }
 
-    func updateUIView(_ v: Host, context: Context) { v.setNeedsLayout() }
+    func updateUIView(_ v: Host, context: Context) {
+        v.onTap = onTap
+        v.onPinch = onPinch
+        v.setNeedsLayout()
+    }
 }
 
 struct PipPreview: UIViewRepresentable {

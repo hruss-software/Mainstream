@@ -56,6 +56,7 @@ public final class FrameLayout {
     public let m: Int
     public let n: Int                 // codeword bytes
     let kind: [CellKind]
+    let isData: [Bool]               // kind == .data, for the decoder's neighbourhood loops
     let dataCells: [Int32]            // ordered cell indices
     public let slots: Int
     let cellsPerSlot: Int
@@ -159,6 +160,7 @@ public final class FrameLayout {
         markerCY = mcy.map { Double($0) + 0.5 }
         self.markerAt = markerAt
         self.kind = kind
+        isData = kind.map { $0 == .data }
 
         // Data order: bands of `bandRows`, each walked as `stripCols`-wide vertical strips,
         // raster inside a strip. A codeword then covers a roughly square patch, so tearing,

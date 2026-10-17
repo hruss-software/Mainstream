@@ -1,9 +1,11 @@
 import SwiftUI
 import AVFoundation
+import UniformTypeIdentifiers
 import MainstreamCore
 
 struct TextComposer: View {
     let onSend: (String) -> Void
+    var onSendPayload: ((Payload) -> Void)? = nil
     @State private var text = ""
     @FocusState private var focused: Bool
     @Environment(\.dismiss) private var dismiss
@@ -25,6 +27,28 @@ struct TextComposer: View {
                     }
                     ToolbarItem(placement: .cancellationAction) {
                         Button { dismiss() } label: { Image(systemName: "xmark") }
+                    }
+                    // paste text into the editor, or send a copied image straight away
+                    ToolbarItem(placement: .primaryAction) {
+                        PasteButton(supportedContentTypes: [.plainText, .image]) { providers in
+                            guard let p = providers.first else { return }
+                            if p.canLoadObject(ofClass: UIImage.self) {
+                                p.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                                    guard let data else { return }
+                                    let ext = p.registeredContentTypes.first { $0.conforms(to: .image) }?.preferredFilenameExtension ?? "png"
+                                    DispatchQueue.main.async {
+                                        dismiss()
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onSendPayload?(Payload(kind: .image, name: "image.\(ext)", data: data)) }
+                                    }
+                                }
+                            } else {
+                                _ = p.loadObject(ofClass: String.self) { str, _ in
+                                    if let str { DispatchQueue.main.async { text += str } }
+                                }
+                            }
+                        }
+                        .labelStyle(.iconOnly)
+                        .buttonBorderShape(.circle)
                     }
                 }
                 .onAppear { focused = true }
@@ -157,81 +181,10 @@ final class Player: NSObject, ObservableObject, AVAudioPlayerDelegate {
         position = 0
         timer?.invalidate()
     }
-}
 
-struct ResultView: View {
-    let payload: Payload
-    private let fileURL: URL
-    @State private var copied = false
-
-    init(payload: Payload) {
-        self.payload = payload
-        let name = payload.name.isEmpty ? "file" : (payload.name as NSString).lastPathComponent
-        let u = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-        try? payload.data.write(to: u)
-        fileURL = u
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            HStack(spacing: 44) {
-                if payload.kind == .text {
-                    Button {
-                        UIPasteboard.general.string = String(decoding: payload.data, as: UTF8.self)
-                        copied = true
-                    } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.title3) }
-                }
-                ShareLink(item: fileURL) { Image(systemName: "square.and.arrow.up").font(.title3) }
-            }
-            .padding(.vertical, 20)
-        }
-        .presentationDragIndicator(.visible)
-    }
-
-    @ViewBuilder private var content: some View {
-        switch payload.kind {
-        case .text:
-            ScrollView {
-                Text(String(decoding: payload.data, as: UTF8.self))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(24)
-            }
-        case .image:
-            if let img = UIImage(data: payload.data) {
-                Image(uiImage: img).resizable().scaledToFit().padding(12)
-            } else {
-                fileBadge
-            }
-        case .audio:
-            AudioResult(player: Player(data: payload.data))
-        case .file:
-            fileBadge
-        }
-    }
-
-    private var fileBadge: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "doc.fill").font(.system(size: 56)).foregroundStyle(.secondary)
-            Text(payload.name).font(.callout)
-            Text(ByteCountFormatter.string(fromByteCount: Int64(payload.data.count), countStyle: .file))
-                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct AudioResult: View {
-    @StateObject var player: Player
-
-    var body: some View {
-        VStack(spacing: 26) {
-            Button { player.toggle() } label: {
-                Image(systemName: player.playing ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 84))
-            }
-            ProgressView(value: player.position).frame(width: 200)
-        }
+    func stop() {
+        player?.stop()
+        timer?.invalidate()
+        playing = false
     }
 }

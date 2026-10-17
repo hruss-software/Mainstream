@@ -7,27 +7,73 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		01A14EBDA44B03CF06720D19 /* MainstreamCore in Frameworks */ = {isa = PBXBuildFile; productRef = DF4FEDEC8B6A0E5834C650E7 /* MainstreamCore */; };
 		01D0EA0FC19CDC4EBE775693 /* Receiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2737BD60FEA1AE6E71615A1 /* Receiver.swift */; };
+		0942B508A0AC50BDA2A792BB /* PayloadPrep.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B76AF82C438AEDF38AD5E6 /* PayloadPrep.swift */; };
 		1D63C03631226449B6D724EA /* MainstreamCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1161A2EC758F60D375738F5D /* MainstreamCore */; };
+		268C7AA4242146441545F5D3 /* MainstreamShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 9525C79106EA353E411C51F7 /* MainstreamShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		397062333DB829E55229CF72 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D501F428C95F4F9A5519EF27 /* ShareViewController.swift */; };
 		5714063125C709A2E45CCFC4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1DE2204BBF4B7A2E9B2A3FC0 /* Assets.xcassets */; };
 		8DABE5ED2FB439C3924E54A5 /* Media.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6557C75EC56540FC9575FF6E /* Media.swift */; };
 		A82793B5E212D56FD857C093 /* MainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B1CEB87032F54DBD392DCFF /* MainApp.swift */; };
 		AD8295A88DDE9CA79F952051 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BFC6197D4E44E55D053465A /* ContentView.swift */; };
-		B4A31AA113F73E0A52638FDB /* Sender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B176F00CDD5345EAF9EC273 /* Sender.swift */; };
+		AF403611455CF7CF783CC167 /* Sender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 835F1AAA96D844031A506021 /* Sender.swift */; };
+		B59182073FE90C38429DC035 /* PayloadPrep.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B76AF82C438AEDF38AD5E6 /* PayloadPrep.swift */; };
+		D4455BF311CE4FE75F7394E2 /* Sender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 835F1AAA96D844031A506021 /* Sender.swift */; };
+		EC3F69B534EF522CD5DC041B /* Composers.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6F8137B90CBCDC94F18C41 /* Composers.swift */; };
+		FEB16E90401353BF1ED6F2BD /* ResultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F6AD1646746ED725BD437E8 /* ResultView.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		C7D1693902D91B1FC762F836 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7C95E83640D67FB94BEE5B20 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B88855B386BB63B63096BC84;
+			remoteInfo = MainstreamShare;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E221F300D1A938EFD2DCDCD2 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				268C7AA4242146441545F5D3 /* MainstreamShare.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		1B176F00CDD5345EAF9EC273 /* Sender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sender.swift; sourceTree = "<group>"; };
 		1BFC6197D4E44E55D053465A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		1DE2204BBF4B7A2E9B2A3FC0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4B1CEB87032F54DBD392DCFF /* MainApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainApp.swift; sourceTree = "<group>"; };
 		6557C75EC56540FC9575FF6E /* Media.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Media.swift; sourceTree = "<group>"; };
+		7F6AD1646746ED725BD437E8 /* ResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultView.swift; sourceTree = "<group>"; };
+		835F1AAA96D844031A506021 /* Sender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sender.swift; sourceTree = "<group>"; };
+		9525C79106EA353E411C51F7 /* MainstreamShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = MainstreamShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A7127BC53FC4F7E934116884 /* Mainstream.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Mainstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A8B76AF82C438AEDF38AD5E6 /* PayloadPrep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayloadPrep.swift; sourceTree = "<group>"; };
+		AE26CA1F4A20AE721F2A6EA0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		D501F428C95F4F9A5519EF27 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		E4EC713A7F8B98DFF4CE345F /* Core */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Core; path = Core; sourceTree = SOURCE_ROOT; };
+		EB6F8137B90CBCDC94F18C41 /* Composers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Composers.swift; sourceTree = "<group>"; };
 		F2737BD60FEA1AE6E71615A1 /* Receiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Receiver.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		1A7A9B8CA42BF5A1E0372845 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				01A14EBDA44B03CF06720D19 /* MainstreamCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D4FFB5C5862FC171D1F7A1A1 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -39,10 +85,29 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		1351038B7D27823EF3FF7B43 /* Share */ = {
+			isa = PBXGroup;
+			children = (
+				AE26CA1F4A20AE721F2A6EA0 /* Info.plist */,
+				D501F428C95F4F9A5519EF27 /* ShareViewController.swift */,
+			);
+			path = Share;
+			sourceTree = "<group>";
+		};
+		46AE847AD854AFA0788A8A5E /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				A8B76AF82C438AEDF38AD5E6 /* PayloadPrep.swift */,
+				835F1AAA96D844031A506021 /* Sender.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
 		540E13CD6ABB1CE62672D79E /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				A7127BC53FC4F7E934116884 /* Mainstream.app */,
+				9525C79106EA353E411C51F7 /* MainstreamShare.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -59,11 +124,12 @@
 			isa = PBXGroup;
 			children = (
 				1DE2204BBF4B7A2E9B2A3FC0 /* Assets.xcassets */,
+				EB6F8137B90CBCDC94F18C41 /* Composers.swift */,
 				1BFC6197D4E44E55D053465A /* ContentView.swift */,
 				4B1CEB87032F54DBD392DCFF /* MainApp.swift */,
 				6557C75EC56540FC9575FF6E /* Media.swift */,
 				F2737BD60FEA1AE6E71615A1 /* Receiver.swift */,
-				1B176F00CDD5345EAF9EC273 /* Sender.swift */,
+				7F6AD1646746ED725BD437E8 /* ResultView.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -72,6 +138,8 @@
 			isa = PBXGroup;
 			children = (
 				A42CC7EA2393B0162F026BA9 /* Packages */,
+				1351038B7D27823EF3FF7B43 /* Share */,
+				46AE847AD854AFA0788A8A5E /* Shared */,
 				A718875ED9250CECDF037AE1 /* Sources */,
 				540E13CD6ABB1CE62672D79E /* Products */,
 			);
@@ -87,10 +155,12 @@
 				EF20B077C39C8710EABDE6D0 /* Sources */,
 				137ABC4D6096FE67A19C7BFF /* Resources */,
 				D4FFB5C5862FC171D1F7A1A1 /* Frameworks */,
+				E221F300D1A938EFD2DCDCD2 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				C3A881C897D81D44FFDB1063 /* PBXTargetDependency */,
 			);
 			name = Mainstream;
 			packageProductDependencies = (
@@ -99,6 +169,25 @@
 			productName = Mainstream;
 			productReference = A7127BC53FC4F7E934116884 /* Mainstream.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B88855B386BB63B63096BC84 /* MainstreamShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A8CE129BA36AD07A4D8CFDDC /* Build configuration list for PBXNativeTarget "MainstreamShare" */;
+			buildPhases = (
+				F848C6DA6E5E76F4EBD7A036 /* Sources */,
+				1A7A9B8CA42BF5A1E0372845 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MainstreamShare;
+			packageProductDependencies = (
+				DF4FEDEC8B6A0E5834C650E7 /* MainstreamCore */,
+			);
+			productName = MainstreamShare;
+			productReference = 9525C79106EA353E411C51F7 /* MainstreamShare.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -110,6 +199,9 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					45056C484B29F4A1EE0D4FFF = {
+						ProvisioningStyle = Automatic;
+					};
+					B88855B386BB63B63096BC84 = {
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -132,6 +224,7 @@
 			projectRoot = "";
 			targets = (
 				45056C484B29F4A1EE0D4FFF /* Mainstream */,
+				B88855B386BB63B63096BC84 /* MainstreamShare */,
 			);
 		};
 /* End PBXProject section */
@@ -152,29 +245,54 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EC3F69B534EF522CD5DC041B /* Composers.swift in Sources */,
 				AD8295A88DDE9CA79F952051 /* ContentView.swift in Sources */,
 				A82793B5E212D56FD857C093 /* MainApp.swift in Sources */,
 				8DABE5ED2FB439C3924E54A5 /* Media.swift in Sources */,
+				0942B508A0AC50BDA2A792BB /* PayloadPrep.swift in Sources */,
 				01D0EA0FC19CDC4EBE775693 /* Receiver.swift in Sources */,
-				B4A31AA113F73E0A52638FDB /* Sender.swift in Sources */,
+				FEB16E90401353BF1ED6F2BD /* ResultView.swift in Sources */,
+				AF403611455CF7CF783CC167 /* Sender.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F848C6DA6E5E76F4EBD7A036 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B59182073FE90C38429DC035 /* PayloadPrep.swift in Sources */,
+				D4455BF311CE4FE75F7394E2 /* Sender.swift in Sources */,
+				397062333DB829E55229CF72 /* ShareViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C3A881C897D81D44FFDB1063 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B88855B386BB63B63096BC84 /* MainstreamShare */;
+			targetProxy = C7D1693902D91B1FC762F836 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		0BFE7E3AA166A8B4930F1491 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Mainstream.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Mainstream;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Receives data shown on another screen and takes photos to send.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Adds contacts you receive.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sends your current location when you choose to.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records audio to send.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saves photos and videos you receive.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
@@ -184,7 +302,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.mainstream;
 				PRODUCT_NAME = Mainstream;
 				SDKROOT = iphoneos;
@@ -193,18 +311,43 @@
 			};
 			name = Debug;
 		};
+		43ABCFB3A851878B7CE5E531 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				INFOPLIST_FILE = Share/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.mainstream.share;
+				PRODUCT_NAME = MainstreamShare;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		6703953323EEE0204958C9CE /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Mainstream.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Mainstream;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Receives data shown on another screen and takes photos to send.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Adds contacts you receive.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sends your current location when you choose to.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records audio to send.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saves photos and videos you receive.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
@@ -214,7 +357,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.mainstream;
 				PRODUCT_NAME = Mainstream;
 				SDKROOT = iphoneos;
@@ -278,6 +421,27 @@
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
+		};
+		EB1E93C205FE4B276D7EA8C5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				INFOPLIST_FILE = Share/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.mainstream.share;
+				PRODUCT_NAME = MainstreamShare;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
 		};
 		F8786308BB6B9B33D0D2C798 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -363,6 +527,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		A8CE129BA36AD07A4D8CFDDC /* Build configuration list for PBXNativeTarget "MainstreamShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EB1E93C205FE4B276D7EA8C5 /* Debug */,
+				43ABCFB3A851878B7CE5E531 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -374,6 +547,10 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		1161A2EC758F60D375738F5D /* MainstreamCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MainstreamCore;
+		};
+		DF4FEDEC8B6A0E5834C650E7 /* MainstreamCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MainstreamCore;
 		};
