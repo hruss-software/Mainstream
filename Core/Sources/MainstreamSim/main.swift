@@ -35,6 +35,8 @@ if let t = env["TSHIFT"] { Acoustic.timingShift = Int(t)! }
 if env["NOPILOTROT"] != nil { Acoustic.usePilotRotation = false }
 if let g = env["ACGAP"] { Acoustic.gap = Int(g)! }
 if env["DEBUGPILOTS"] != nil { Acoustic.debugPilots = true }
+if let w = env["PWIN"] { Acoustic.pilotWindow = Int(w)! }
+if let w = env["DWIN"] { Acoustic.decisionWindow = Int(w)! }
 
 // Decode a screenshot of the sender: directly, and through the synthetic camera.
 if let path = env["DECODE"] {
@@ -148,7 +150,7 @@ if let pair = env["GENIE"] {
     let unit = M == 2 ? Float.pi : 2 * Float.pi / Float(M)
     func wrap(_ a: Float) -> Float { var v = a; while v > .pi { v -= 2 * .pi }; while v < -.pi { v += 2 * .pi }; return v }
     // frames are identical every frame? no: match by symbol-decision agreement
-    for (fi, r) in rxf.prefix(4).enumerated() {
+    for (fi, r) in rxf.prefix(Int(env["GENIEFRAMES"] ?? "4")!).enumerated() {
         var bestT = 0, bestAgree = -1
         for (ti, t) in tx.enumerated() where t.lastIdx.count == r.lastIdx.count {
             let agree = zip(t.lastIdx, r.lastIdx).filter { $0 == $1 }.count
@@ -172,16 +174,68 @@ if let pair = env["GENIE"] {
         for q in 0..<total { let isEarly = q / K < symsPerCarrier / 2; if t.lastIdx[q] != r.lastIdx[q] { if isEarly { early += 1 } else { late += 1 } }; if isEarly { nE += 1 } else { nL += 1 } }
         print(String(format: "rx frame %d ↔ tx frame %d: coherent step errors %.1f%% (first half %.1f%%, second half %.1f%%) | differential %@", fi, bestT,
                      100 * Double(coh) / Double(total), 100 * Double(early) / Double(max(1, nE)), 100 * Double(late) / Double(max(1, nL)), stats(errsRaw)))
-        // per carrier-region mean error (bias) and spread, raw
+        // coherent decision errors by carrier decile
         let syms = total / K
-        var line = "  raw mean error by carrier decile:"
+        var line = "  coherent errors by carrier decile:"
+        let binsAll = Array(b.carriers), dataBins = binsAll.indices.filter { $0 % 8 != 0 }.map { binsAll[$0] }
         for d in 0..<10 {
             let lo = d * K / 10, hi = (d + 1) * K / 10
-            var sx: Float = 0, sy: Float = 0, sa: Float = 0, n: Float = 0
-            for s in 0..<syms { for k in lo..<hi { let e = errsRaw[s * K + k]; sx += cos(e); sy += sin(e); sa += abs(e); n += 1 } }
-            line += String(format: " [%.1fk bias %+.2f |e| %.2f]", Double(b.carriers.lowerBound + lo) * Acoustic.sampleRate / Double(Acoustic.N) / 1000, atan2(sy, sx), sa / n)
+            var e = 0, n = 0
+            for s in 0..<syms { for k in lo..<hi { if t.lastIdx[s * K + k] != r.lastIdx[s * K + k] { e += 1 }; n += 1 } }
+            line += String(format: " %.1fk:%.0f%%", Double(dataBins[lo]) * Acoustic.sampleRate / Double(Acoustic.N) / 1000, 100 * Double(e) / Double(max(1, n)))
         }
         print(line)
+        // residual phase of the corrected symbols against the true ones, by carrier group:
+        // a coherent offset means a wrong channel estimate, low coherence means noise
+        let cOff: Float = M == 4 ? .pi / 4 : 0
+        var line2 = "  residual angle[coherence] by carrier group:"
+        for d in 0..<20 {
+            let lo = d * K / 20, hi = (d + 1) * K / 20
+            var sr: Float = 0, si: Float = 0, n = 0
+            for s in 0..<syms { for k in lo..<hi { let e = r.lastTheta[s * K + k] - Float(t.lastIdx[s * K + k]) * unit - cOff; sr += cos(e); si += sin(e); n += 1 } }
+            line2 += String(format: " %.1fk:%+.2f[%.2f]", Double(dataBins[lo]) * Acoustic.sampleRate / Double(Acoustic.N) / 1000, atan2(si, sr), sqrt(sr * sr + si * si) / Float(max(1, n)))
+        }
+        print(line2)
+    }
+    exit(0)
+}
+// Pilot analysis: per-pilot phase rate across each frame (clock offset shows as a rate ∝ bin).
+if let path = env["PILOTS"] {
+    let x = readWAV(path)
+    let rx = AcousticReceiver()
+    Acoustic.pilotDump = { pd, pw, pb in
+        let S = pd.count, P = pb.count
+        var line = "frame: rate(rad/sym)·1000 @kHz [coh]:"
+        var rates: [(Double, Double, Double)] = []
+        for q in 0..<P {
+            var sr: Double = 0, si: Double = 0
+            for s in 1..<S { let d = Double(pd[s][q] - pd[s - 1][q]); sr += cos(d); si += sin(d) }
+            let w = atan2(si, sr), c = sqrt(sr * sr + si * si) / Double(S - 1)
+            rates.append((Double(pb[q]) * Acoustic.sampleRate / Double(Acoustic.N), w, c))
+        }
+        for q in stride(from: 0, to: P, by: max(1, P / 16)) {
+            line += String(format: " %.1f:%+.1f[%.2f]", rates[q].0 / 1000, rates[q].1 * 1000, rates[q].2)
+        }
+        print(line)
+        // weighted LS of rate vs frequency (coherence² weights)
+        var a = 0.0, b = 0.0, c = 0.0, d = 0.0, e = 0.0
+        for (f, w, k) in rates { let ww = k * k; a += ww; b += ww * f; c += ww * f * f; d += ww * w; e += ww * w * f }
+        let slope = (a * e - b * d) / (a * c - b * b), icpt = (d - slope * b) / a
+        let ppm = slope / (2 * Double.pi * Double(Acoustic.N + Acoustic.CP) / Acoustic.sampleRate) * 1e6
+        print(String(format: "  fit: rate = %+.4f + %+.3e·f  → %.1f ppm; symbols %d", icpt, slope, ppm, S))
+        if env["PILOTSYM"] != nil {
+            for s in stride(from: 0, to: S, by: 6) {
+                var l = String(format: "   s%2d:", s)
+                for q in stride(from: 0, to: P, by: max(1, P / 16)) { l += String(format: " %+.1f", pd[s][q]) }
+                print(l)
+            }
+        }
+    }
+    var i = 0
+    while i < x.count {
+        let n = min(4800, x.count - i)
+        _ = x.withUnsafeBufferPointer { rx.process(UnsafeBufferPointer(rebasing: $0[i..<(i + n)])) }
+        i += n
     }
     exit(0)
 }

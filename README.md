@@ -36,8 +36,8 @@ Open `Mainstream.xcodeproj` in Xcode 27.1, or run `xcodegen generate` after edit
 | Screen receiver | Per-cell local normalisation and blind colour-crosstalk inversion. A decision-feedback inter-cell equaliser roughly doubles goodput under defocus in simulation. |
 | Camera | 60 fps at the highest resolution available (4K60 when single). Exposure is capped at 1/250 s, with −0.7 EV, near-range autofocus and stabilisation off. Multi-camera mode feeds both cameras into one transfer. That gives diversity (a second look and a different focus distance) rather than double the raw rate. |
 | Sound frame | A chirp, a 43 ms gap for its echo to die, then reference and header symbols. About 4 s of data follows, so sync costs ~6% of airtime instead of ~25%. Symbols are 2048-point OFDM with a 1024-sample (21 ms) cyclic prefix, which outlasts the room echoes measured at 8–16 ms. |
-| Sound tracking | Every 8th carrier is a known pilot. One frame-wide clock-offset slope and a per-symbol phase are fitted to them, so drift is removed without relying on decisions. Each carrier's channel is estimated over three passes from the known symbols, pilots and confident decisions within a ±10-symbol window. |
-| Sound coding | Reed–Solomon packets are wrapped in a rate-½ or ¾ convolutional code (K = 7, 171/133). The coded bits are interleaved across all carriers and symbols and carried on BPSK or QPSK. They're decoded with soft-decision Viterbi, where each carrier's bits are weighted by its measured noise, so weak frequencies simply count for less. |
+| Sound tracking | Every 8th carrier is a known pilot. Clock offset comes from a straight-line fit of each pilot's phase rate against frequency, and a common phase is fitted per symbol, so drift is removed without relying on decisions. Real speakers change their phase response after the silent gap (their DSP settles), so the channel the data sees is taken from the pilots (averaged over ±8 symbols, interpolated across frequency) rather than from the reference symbol. Confident decisions refine it per carrier, but a refinement that swings by half a constellation step is rejected. |
+| Sound coding | Reed–Solomon packets are wrapped in a rate-½ or ¾ convolutional code (K = 7, 171/133). The coded bits are interleaved across all carriers and symbols and carried on BPSK or QPSK. They're decoded with soft-decision Viterbi, where each carrier's bits are weighted by its noise (measured on the pilots, so a carrier whose decisions are mostly wrong can't look clean), so weak frequencies simply count for less. |
 
 ## Simulation and tests
 `swift test -c release` in `Core` covers Reed–Solomon, the fountain code, the end-to-end camera link and an audio round trip on every band.
@@ -50,7 +50,8 @@ Open `Mainstream.xcodeproj` in Xcode 27.1, or run `xcodegen generate` after edit
 | `AUDIO=1` | The acoustic modem through a simulated room (echoes, reverb, clock offset, noise; `LOWCUT=`/`HIGHCUT=` shape the speaker) |
 | `WAV=` / `DECODEWAV=` | Write a sound transmission to a file / decode a recording of one |
 | `CHANNEL=` | Measures echoes and clock drift in a recording |
-| `GENIE=tx.wav,rx.wav` | Compares a recording's decisions against what was sent |
+| `GENIE=tx.wav,rx.wav` | Compares a recording's decisions against what was sent, with error rate and residual phase by frequency |
+| `PILOTS=rx.wav` | Per-pilot phase rates in a recording, and the clock offset they imply |
 | `DECODE=shot.png` | Decodes a screenshot of the screen sender |
 
 Findings that shaped the design:
@@ -60,3 +61,4 @@ Findings that shaped the design:
   - Frequencies below ~4 kHz and above ~18 kHz were weak.
   - Uncoded BPSK still saw 5–12% symbol errors, which only soft-decision convolutional coding can absorb.
   - Short frames spent a quarter of their airtime on chirps.
+  - The speaker's phase response shifted by up to ±1.2 rad, smoothly across frequency, between the reference symbol and the data that followed. Trusting the reference locked whole frequency regions onto a rotated constellation.

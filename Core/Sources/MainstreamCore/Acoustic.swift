@@ -46,6 +46,11 @@ public enum Acoustic {
     static let pilotSpacing = 8
     public static var usePilotRotation = true   // diagnostics
     public static var debugPilots = false
+    /// Diagnostics: receives each frame's pilot phases (symbol × pilot), pilot weights and bins.
+    /// Symbols either side averaged for the pilot channel and for decision refinement.
+    public static var pilotWindow = 8
+    public static var decisionWindow = 8
+    public static var pilotDump: (([[Float]], [Float], [Int]) -> Void)? = nil
 
     static func pilotPhase(_ symbol: Int, _ i: Int) -> Float {
         var r = SplitMix64(UInt64(symbol) &* 0x9E37 ^ UInt64(i) &* 0x85EB)
@@ -507,74 +512,130 @@ public final class AcousticReceiver {
         }
         var cq = [Float](repeating: 0, count: K), sq = [Float](repeating: 0, count: F.symbols)
         var dTheta = [Float](), dRaw = [Float](), dIdx = [Int]()
-        let pw = F.pilotPos.map { hmag[$0] }
-        // Pass 1: pilot phases for every symbol. Clock offset makes the rotation grow as
-        // s·C·(bin − centre), so one slope C is fitted across the whole frame (grid search,
-        // robust to noisy pilots); each symbol then only needs a common phase a_s.
-        let spectra = (0..<F.symbols).map { spectrum(at: start + ($0 + 2) * Acoustic.symbolLength) }
-        var pd = [[Float]](repeating: [Float](repeating: 0, count: F.pilotPos.count), count: F.symbols)
-        for s in 0..<F.symbols {
+        let S = F.symbols, P = F.pilotPos.count
+        // Pilot phases relative to the reference channel, for every symbol.
+        let spectra = (0..<S).map { spectrum(at: start + ($0 + 2) * Acoustic.symbolLength) }
+        var pzr = [[Float]](repeating: [Float](repeating: 0, count: P), count: S), pzi = pzr, pd = pzr
+        for s in 0..<S {
             let cur = spectra[s]
             for (q, i) in F.pilotPos.enumerated() {
                 let k = bins[i], a = Acoustic.pilotPhase(s, i)
                 let zr = cur.0[k] * cos(a) + cur.1[k] * sin(a), zi = cur.1[k] * cos(a) - cur.0[k] * sin(a)
+                pzr[s][q] = zr; pzi[s][q] = zi
                 pd[s][q] = atan2(zi * hr[i] - zr * hi[i], zr * hr[i] + zi * hi[i])
             }
         }
+        Acoustic.pilotDump?(pd, F.pilotPos.map { hmag[$0] }, F.pilotPos.map { bins[$0] })
         let px = F.pilotPos.map { Float($0) - bc }
-        func coherence(_ C: Float) -> Float {
-            var tot: Float = 0
-            for s in 0..<F.symbols {
-                var sr: Float = 0, si: Float = 0
-                let k = Float(s + 1) * C
-                for q in 0..<px.count { let t = pd[s][q] - k * px[q]; sr += pw[q] * cos(t); si += pw[q] * sin(t) }
-                tot += sqrt(sr * sr + si * si)
+        // Real speakers do not keep the channel the reference symbol saw: their DSP settles after
+        // the silent gap, leaving a smooth frequency-dependent phase and gain change for the rest
+        // of the frame. So the pilots, not the reference, define the channel the data sees.
+        //
+        // Clock offset: each pilot's phase advances at a steady rate ∝ its frequency. The rates
+        // come from symbol-to-symbol differences (unambiguous, and blind to any static offset),
+        // and a weighted straight-line fit across pilots gives the slope.
+        var rate = [Float](repeating: 0, count: P), rw = rate
+        for q in 0..<P {
+            var sr: Float = 0, si: Float = 0
+            for s in 1..<S { let d = pd[s][q] - pd[s - 1][q]; sr += cos(d); si += sin(d) }
+            let c = min(0.99, sqrt(sr * sr + si * si) / Float(max(1, S - 1)))
+            rate[q] = atan2(si, sr); rw[q] = c * c / (1 - c * c)
+        }
+        var slope: Float = 0
+        do {
+            var w = rw
+            for _ in 0..<3 {   // reweight to shrug off pilots in notches
+                var a: Float = 0, b: Float = 0, c: Float = 0, d: Float = 0, e: Float = 0
+                for q in 0..<P { a += w[q]; b += w[q] * px[q]; c += w[q] * px[q] * px[q]; d += w[q] * rate[q]; e += w[q] * rate[q] * px[q] }
+                let den = a * c - b * b
+                guard den > 0 else { break }
+                slope = (a * e - b * d) / den
+                let icpt = (d - slope * b) / a
+                for q in 0..<P { let r = (rate[q] - icpt - slope * px[q]) / 0.01; w[q] = rw[q] / (1 + r * r) }
             }
-            return tot
-        }
-        // up to ±200 ppm: per-symbol slope 2π·ppm·L/N rad per bin
-        let cMax = Float(2 * Double.pi * 200e-6 * Double(Acoustic.symbolLength) / Double(Acoustic.N))
-        var bestC: Float = 0, bestV = coherence(0)
-        let steps = 60
-        for g in -steps...steps where g != 0 {
-            let C = cMax * Float(g) / Float(steps)
-            let v = coherence(C)
-            if v > bestV { bestV = v; bestC = C }
-        }
-        var slope = bestC
-        for _ in 0..<2 {  // local refine
-            let h = cMax / Float(steps) / 2
-            let l = coherence(slope - h), r = coherence(slope + h), m = coherence(slope)
-            let den = l - 2 * m + r
-            if den < 0 { slope += h * 0.5 * (l - r) / den }
         }
         if !Acoustic.usePilotRotation { slope = 0 }
-        // per-symbol rotation: frame-wide slope × symbol index + per-symbol common phase
-        var rotA = [Float](repeating: 0, count: F.symbols), rotC = rotA
-        for s in 0..<F.symbols {
-            var sr: Float = 0, si: Float = 0
-            let k = Float(s + 1) * slope
-            for q in 0..<px.count { let t = pd[s][q] - k * px[q]; sr += pw[q] * cos(t); si += pw[q] * sin(t) }
-            rotA[s] = Acoustic.usePilotRotation ? atan2(si, sr) : 0
-            rotC[s] = k
-            if Acoustic.debugPilots && s % 4 == 0 { print(String(format: "  sym %d common %+.2f slope %+.5f/bin", s, rotA[s], rotC[s])) }
+        // Per-symbol common phase a_s and each pilot's static offset θ_q, estimated alternately
+        // (seeded from symbol-to-symbol differences).
+        var rotA = [Float](repeating: 0, count: S), rotC = (0..<S).map { Float($0 + 1) * slope }
+        var theta = [Float](repeating: 0, count: P), pq = rw
+        if Acoustic.usePilotRotation {
+            for s in 1..<S {
+                var sr: Float = 0, si: Float = 0
+                for q in 0..<P { let t = pd[s][q] - pd[s - 1][q] - slope * px[q]; sr += pq[q] * cos(t); si += pq[q] * sin(t) }
+                rotA[s] = rotA[s - 1] + atan2(si, sr)
+            }
+            for _ in 0..<2 {
+                for q in 0..<P {
+                    var sr: Float = 0, si: Float = 0
+                    for s in 0..<S { let t = pd[s][q] - rotA[s] - rotC[s] * px[q]; sr += cos(t); si += sin(t) }
+                    theta[q] = atan2(si, sr)
+                    let c = min(0.99, sqrt(sr * sr + si * si) / Float(S))
+                    pq[q] = c * c / (1 - c * c)
+                }
+                for s in 0..<S {
+                    var sr: Float = 0, si: Float = 0
+                    for q in 0..<P { let t = pd[s][q] - rotC[s] * px[q] - theta[q]; sr += pq[q] * cos(t); si += pq[q] * sin(t) }
+                    rotA[s] = atan2(si, sr)
+                }
+            }
         }
-        // Iterative detection: decide every symbol, re-estimate each carrier's channel from the
-        // known symbols, pilots and confident decisions within ±window symbols (frames are
-        // long, so the estimate follows a slowly changing channel), then decide again.
+        if Acoustic.debugPilots {
+            print(String(format: "  slope %+.2e/bin/sym (%.1f ppm)", slope, Double(slope) * Double(Acoustic.N) / (2 * .pi * Double(Acoustic.symbolLength)) * 1e6))
+        }
+        // Pilot channel: rotation-corrected pilot observations averaged over ±window symbols,
+        // as a correction G = observed / reference channel.
+        let window = Acoustic.pilotWindow
+        var gr = [[Float]](repeating: [Float](repeating: 0, count: P), count: S), gi = gr
+        do {
+            var cr = [Float](repeating: 0, count: P), ci = cr
+            var pre = [([Float], [Float])](repeating: (cr, ci), count: S + 1)
+            for s in 0..<S {
+                for (q, i) in F.pilotPos.enumerated() {
+                    let t = rotA[s] + rotC[s] * px[q], ct = cos(t), st = sin(t)
+                    let zr = pzr[s][q] * ct + pzi[s][q] * st, zi = pzi[s][q] * ct - pzr[s][q] * st
+                    // divide by the reference channel
+                    let h2 = max(1e-12, hr[i] * hr[i] + hi[i] * hi[i])
+                    cr[q] += (zr * hr[i] + zi * hi[i]) / h2; ci[q] += (zi * hr[i] - zr * hi[i]) / h2
+                }
+                pre[s + 1] = (cr, ci)
+            }
+            for s in 0..<S {
+                let lo = max(0, s - window), hi2 = min(S, s + window + 1), n = Float(hi2 - lo)
+                for q in 0..<P { gr[s][q] = (pre[hi2].0[q] - pre[lo].0[q]) / n; gi[s][q] = (pre[hi2].1[q] - pre[lo].1[q]) / n }
+            }
+        }
+        // interpolate G to every carrier from the nearest pilots, trusting steadier pilots more
+        let sp = Acoustic.pilotSpacing
         let knownR = hr, knownI = hi
-        // data carriers step from the header's phase, so decisions are made relative to it
+        var HR = [[Float]](repeating: hr, count: S), HI = HR
+        for s in 0..<S {
+            for i in 0..<nb {
+                let q0 = i / sp
+                var sr: Float = 0, si: Float = 0, sw: Float = 0
+                for q in max(0, q0 - 1)...min(P - 1, q0 + 2) {
+                    let d = abs(Float(F.pilotPos[q] - i))
+                    let w = max(0, 1 - d / Float(2 * sp)) * (pq[q] + 0.05)
+                    sr += w * gr[s][q]; si += w * gi[s][q]; sw += w
+                }
+                guard sw > 0 else { continue }
+                sr /= sw; si /= sw
+                HR[s][i] = knownR[i] * sr - knownI[i] * si
+                HI[s][i] = knownR[i] * si + knownI[i] * sr
+            }
+        }
+        let pilotHR = HR, pilotHI = HI
+        // Iterative detection: decide every symbol, then refine each carrier's channel from
+        // confident decisions within ±window symbols. The refinement is anchored to the pilot
+        // channel and rejected if it swings by half a constellation step, so the decisions can't
+        // talk themselves onto a rotated constellation.
         let off = (0..<nb).map { Float(refPh[$0]) * .pi / 2 + (hdrBits[$0 % 16] ? .pi : 0) }
-        let S = F.symbols
         var dec = [[Int]](repeating: [Int](repeating: 0, count: K), count: S)
         var err = [[Float]](repeating: [Float](repeating: 0, count: K), count: S)
         var phis = err
-        var HR = [[Float]](repeating: hr, count: S), HI = [[Float]](repeating: hi, count: S)
-        let window = 10
         for pass in 0..<3 {
             for s in 0..<S {
                 let cur = spectra[s]
-                if pass == 0 { HR[s] = hr; HI[s] = hi }
                 for (j, i) in F.dataPos.enumerated() {
                     let k = bins[i]
                     let gr = HR[s][i], gi = HI[s][i]
@@ -584,41 +645,64 @@ public final class AcousticReceiver {
                     dec[s][j] = ((q % M) + M) % M
                     err[s][j] = wrap(phi - cOff - Float(q) * unit)
                     phis[s][j] = phi
-                    // first pass: refresh the channel as decisions arrive
-                    if pass == 0 && abs(err[s][j]) < unit / 4 {
-                        let ang = Float(dec[s][j]) * unit + cOff + off[i] + rotA[s] + rotC[s] * (Float(i) - bc)
-                        let zr = cur.0[k] * cos(ang) + cur.1[k] * sin(ang), zi = cur.1[k] * cos(ang) - cur.0[k] * sin(ang)
-                        hr[i] = 0.85 * hr[i] + 0.15 * zr; hi[i] = 0.85 * hi[i] + 0.15 * zi
-                    }
                 }
             }
             if pass == 2 { break }
-            // per-symbol channel observations (pilots always, data when confident), then a
-            // sliding-window average via prefix sums
-            var cr = [[Float]](repeating: [Float](repeating: 0, count: nb), count: S + 1), ci = cr, cw = cr
+            var cr = [[Float]](repeating: [Float](repeating: 0, count: K), count: S + 1), ci = cr, cw = cr
             for s in 0..<S {
                 let cur = spectra[s]
                 cr[s + 1] = cr[s]; ci[s + 1] = ci[s]; cw[s + 1] = cw[s]
-                for i in F.pilotPos {
-                    let k = bins[i], ang = Acoustic.pilotPhase(s, i) + rotA[s] + rotC[s] * (Float(i) - bc)
-                    cr[s + 1][i] += cur.0[k] * cos(ang) + cur.1[k] * sin(ang); ci[s + 1][i] += cur.1[k] * cos(ang) - cur.0[k] * sin(ang); cw[s + 1][i] += 1
-                }
                 for (j, i) in F.dataPos.enumerated() {
                     let w = max(0, 1 - abs(err[s][j]) / (unit / 2))
                     if w < 0.3 { continue }
                     let k = bins[i], ang = Float(dec[s][j]) * unit + cOff + off[i] + rotA[s] + rotC[s] * (Float(i) - bc)
-                    cr[s + 1][i] += w * (cur.0[k] * cos(ang) + cur.1[k] * sin(ang)); ci[s + 1][i] += w * (cur.1[k] * cos(ang) - cur.0[k] * sin(ang)); cw[s + 1][i] += w
+                    cr[s + 1][j] += w * (cur.0[k] * cos(ang) + cur.1[k] * sin(ang)); ci[s + 1][j] += w * (cur.1[k] * cos(ang) - cur.0[k] * sin(ang)); cw[s + 1][j] += w
                 }
             }
+            let prior: Float = 3
+            let window = Acoustic.decisionWindow
             for s in 0..<S {
                 let lo = max(0, s - window), hi2 = min(S, s + window + 1)
-                let known: Float = s < window ? 2 : 0      // reference + header symbols sit just before s = 0
-                for i in 0..<nb {
-                    let w = cw[hi2][i] - cw[lo][i] + known
-                    guard w > 0 else { continue }
-                    HR[s][i] = (cr[hi2][i] - cr[lo][i] + known * knownR[i]) / w
-                    HI[s][i] = (ci[hi2][i] - ci[lo][i] + known * knownI[i]) / w
+                for (j, i) in F.dataPos.enumerated() {
+                    let pr = pilotHR[s][i], pi = pilotHI[s][i]
+                    let w = cw[hi2][j] - cw[lo][j]
+                    let er = (cr[hi2][j] - cr[lo][j] + prior * pr) / (w + prior)
+                    let ei = (ci[hi2][j] - ci[lo][j] + prior * pi) / (w + prior)
+                    let swing = atan2(ei * pr - er * pi, er * pr + ei * pi)
+                    if abs(swing) < unit / 2 { HR[s][i] = er; HI[s][i] = ei } else { HR[s][i] = pr; HI[s][i] = pi }
                 }
+            }
+        }
+        // Noise from the pilots: their spread around the known value (before equalising, where the
+        // microphone's noise varies smoothly with frequency), interpolated and scaled by each
+        // carrier's gain. Unlike the spread around decisions, this doesn't flatter a carrier
+        // whose decisions are mostly wrong. It is tracked over ±3 symbols, because interference
+        // such as speech comes in bursts: a burst then discounts only the symbols it hits.
+        let noiseWindow = 3
+        var pre = [[Float]](repeating: [Float](repeating: 0, count: P), count: S + 1)
+        for s in 0..<S {
+            pre[s + 1] = pre[s]
+            for (q, i) in F.pilotPos.enumerated() {
+                let t = rotA[s] + rotC[s] * px[q], ct = cos(t), st = sin(t)
+                let zr = pzr[s][q] * ct + pzi[s][q] * st, zi = pzi[s][q] * ct - pzr[s][q] * st
+                let er = zr - pilotHR[s][i], ei = zi - pilotHI[s][i]
+                pre[s + 1][q] += er * er + ei * ei
+            }
+        }
+        var floorNoise = [[Float]](repeating: [Float](repeating: 1, count: K), count: S)
+        var floorMean = [Float](repeating: 0, count: K)
+        for s in 0..<S {
+            let lo = max(0, s - noiseWindow), hi2 = min(S, s + noiseWindow + 1), n = Float(hi2 - lo)
+            for (j, i) in F.dataPos.enumerated() {
+                let q0 = i / sp
+                var sn: Float = 0, sw: Float = 0
+                for q in max(0, q0 - 1)...min(P - 1, q0 + 2) {
+                    let w = max(0, 1 - abs(Float(F.pilotPos[q] - i)) / Float(2 * sp))
+                    sn += w * (pre[hi2][q] - pre[lo][q]) / n; sw += w
+                }
+                let g2 = max(1e-12, HR[s][i] * HR[s][i] + HI[s][i] * HI[s][i])
+                if sw > 0 { floorNoise[s][j] = sn / sw / g2 }
+                floorMean[j] += floorNoise[s][j] / Float(S)
             }
         }
         hmag = (0..<nb).map { i in
@@ -651,7 +735,9 @@ public final class AcousticReceiver {
         var llr = [Float](repeating: 0, count: S * K * b)
         for s in 0..<S {
             for j in 0..<K {
-                let w = 2 / max(0.02, noise[j])
+                // per-carrier level from the decisions, shaped over time by the pilots' noise
+                let f = floorNoise[s][j]
+                let w = 2 / max(0.02, f, noise[j] * f / max(1e-12, floorMean[j]))
                 let (yr, yi) = y[s][j]
                 let p = (s * K + j) * b
                 if b == 1 { llr[p] = w * yr } else { llr[p] = w * yr * 1.4142135; llr[p + 1] = w * yi * 1.4142135 }
