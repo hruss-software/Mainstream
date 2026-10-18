@@ -88,9 +88,10 @@ struct ResultView: View {
                 actions
                 if let text = plainText {
                     Button { UIPasteboard.general.string = text; done = true } label: { icon("doc.on.doc") }
-                    ShareLink(item: text) { icon("square.and.arrow.up") }
+                        .accessibilityLabel("Copy")
+                    ShareLink(item: text) { icon("square.and.arrow.up") }.accessibilityLabel("Share")
                 } else {
-                    ShareLink(item: file.url) { icon("square.and.arrow.up") }
+                    ShareLink(item: file.url) { icon("square.and.arrow.up") }.accessibilityLabel("Share")
                 }
             }
             .padding(.vertical, 20)
@@ -108,6 +109,7 @@ struct ResultView: View {
             if case .contact(let c) = smart { ContactAdd(contact: c) }
         }
         .animation(.default, value: done)
+        .sensoryFeedback(trigger: done) { _, new in new == nil ? nil : (new! ? .success : .error) }
     }
 
     private var plainText: String? {
@@ -193,20 +195,22 @@ struct ResultView: View {
                 Link(destination: d.1) { icon(d.0) }
             }
         case .wifi(let w):
-            Button { join(w) } label: { icon("wifi") }
+            Button { join(w) } label: { icon("wifi") }.accessibilityLabel("Join network")
             if !w.password.isEmpty {
                 Button { UIPasteboard.general.string = w.password; done = true } label: { icon("key") }
+                    .accessibilityLabel("Copy password")
             }
         case .location(let c):
             Button {
                 MKMapItem(placemark: MKPlacemark(coordinate: c)).openInMaps()
             } label: { icon("map") }
+            .accessibilityLabel("Open in Maps")
         case .contact:
-            Button { addingContact = true } label: { icon("person.badge.plus") }
+            Button { addingContact = true } label: { icon("person.badge.plus") }.accessibilityLabel("Add contact")
         case .image:
-            Button { save(.photo) } label: { icon("square.and.arrow.down") }
+            Button { save(.photo) } label: { icon("square.and.arrow.down") }.accessibilityLabel("Save to Photos")
         case .video:
-            Button { save(.video) } label: { icon("square.and.arrow.down") }
+            Button { save(.video) } label: { icon("square.and.arrow.down") }.accessibilityLabel("Save to Photos")
         case .audio, .file:
             EmptyView()
         }

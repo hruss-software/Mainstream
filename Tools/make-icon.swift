@@ -4,23 +4,32 @@ import ImageIO
 import UniformTypeIdentifiers
 
 // Renders Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png:
-//   swiftc -O Tools/make-icon.swift -o /tmp/make-icon && /tmp/make-icon Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+//   swiftc -O Tools/make-icon.swift -o /tmp/make-icon && for v in light dark tinted; do
+//     /tmp/make-icon Sources/Assets.xcassets/AppIcon.appiconset/AppIcon-$v.png $v; done
 // Mainstream icon: a stream of data — three flowing bands that turn into a column of
 // pixels, on a deep blue-to-teal field.
+let variant = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "light"   // light, dark, tinted
 let S = 1024
 let cs = CGColorSpaceCreateDeviceRGB()
 let ctx = CGContext(data: nil, width: S, height: S, bitsPerComponent: 8, bytesPerRow: 0, space: cs,
                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
 let W = CGFloat(S)
 // background
-let bg = CGGradient(colorsSpace: cs, colors: [CGColor(red: 0.04, green: 0.07, blue: 0.22, alpha: 1),
-                                               CGColor(red: 0.02, green: 0.42, blue: 0.55, alpha: 1)] as CFArray, locations: [0, 1])!
+// dark and tinted variants sit on near-black; tinted is grayscale for the system to colour
+let bgColors: [CGColor] = variant == "light"
+    ? [CGColor(red: 0.04, green: 0.07, blue: 0.22, alpha: 1), CGColor(red: 0.02, green: 0.42, blue: 0.55, alpha: 1)]
+    : variant == "dark"
+    ? [CGColor(red: 0.01, green: 0.02, blue: 0.05, alpha: 1), CGColor(red: 0.02, green: 0.09, blue: 0.13, alpha: 1)]
+    : [CGColor(gray: 0, alpha: 1), CGColor(gray: 0.06, alpha: 1)]
+let bg = CGGradient(colorsSpace: cs, colors: bgColors as CFArray, locations: [0, 1])!
 ctx.drawLinearGradient(bg, start: CGPoint(x: 0, y: W), end: CGPoint(x: W, y: 0), options: [])
 // soft glow
 let glow = CGGradient(colorsSpace: cs, colors: [CGColor(red: 0.3, green: 0.9, blue: 1, alpha: 0.28), CGColor(red: 0.3, green: 0.9, blue: 1, alpha: 0)] as CFArray, locations: [0, 1])!
-ctx.drawRadialGradient(glow, startCenter: CGPoint(x: W * 0.62, y: W * 0.5), startRadius: 0, endCenter: CGPoint(x: W * 0.62, y: W * 0.5), endRadius: W * 0.5, options: [])
+if variant != "tinted" { ctx.drawRadialGradient(glow, startCenter: CGPoint(x: W * 0.62, y: W * 0.5), startRadius: 0, endCenter: CGPoint(x: W * 0.62, y: W * 0.5), endRadius: W * 0.5, options: []) }
 // three waves flowing left → right, converging
-let colors: [(CGFloat, CGFloat, CGFloat)] = [(0.55, 0.95, 1.0), (1, 1, 1), (0.45, 0.75, 1.0)]
+let colors: [(CGFloat, CGFloat, CGFloat)] = variant == "tinted"
+    ? [(0.7, 0.7, 0.7), (1, 1, 1), (0.6, 0.6, 0.6)]
+    : [(0.55, 0.95, 1.0), (1, 1, 1), (0.45, 0.75, 1.0)]
 for (n, c) in colors.enumerated() {
     let off = CGFloat(n - 1)
     let path = CGMutablePath()

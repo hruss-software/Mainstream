@@ -167,9 +167,11 @@ struct CloseButton: View {
             Image(systemName: "xmark")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 40, height: 36)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Close")
     }
 }
 
@@ -198,6 +200,8 @@ struct VisibleSender: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(compressMedia ? Color.accentColor : .secondary)
+                    .accessibilityLabel("Send smaller version")
+                    .accessibilityAddTraits(compressMedia ? .isSelected : [])
                 }
                 Text(sizeText(Double(sending.data.count)))
                     .font(.system(size: 14, weight: .medium).monospacedDigit())
@@ -213,9 +217,13 @@ struct VisibleSender: View {
             VStack(spacing: 6) {
                 IconSlider(value: Binding(get: { Double(level) }, set: { level = Int($0) }),
                            range: 0...Double(Ladder.levels.count - 1), low: "square.grid.2x2", high: "square.grid.4x3.fill")
+                    .accessibilityLabel("Density")
+                    .sensoryFeedback(.selection, trigger: level)
                 // right = faster frames
                 IconSlider(value: Binding(get: { Double(7 - hold) }, set: { hold = 7 - Int($0) }),
                            range: 1...6, low: "tortoise", high: "hare")
+                    .accessibilityLabel("Frame rate")
+                    .sensoryFeedback(.selection, trigger: hold)
             }
             .padding(.horizontal, 22)
             .padding(.top, 8)

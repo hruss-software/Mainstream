@@ -18,6 +18,12 @@ targets:
       - package: MainstreamCore
         product: MainstreamCore
       - target: MainstreamShare
+    info:
+      path: Sources/Info.plist
+      properties:
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen:
+          UIColorName: LaunchBackground
     entitlements:
       path: Mainstream.entitlements
       properties:
@@ -27,7 +33,7 @@ targets:
         PRODUCT_NAME: Mainstream
         PRODUCT_BUNDLE_IDENTIFIER: com.local.mainstream
         MARKETING_VERSION: "2.1"
-        CURRENT_PROJECT_VERSION: "3"
+        CURRENT_PROJECT_VERSION: "4"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
@@ -38,7 +44,6 @@ targets:
         INFOPLIST_KEY_NSContactsUsageDescription: Adds contacts you receive.
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Saves photos and videos you receive.
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: Sends your current location when you choose to.
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
         INFOPLIST_KEY_UIRequiresFullScreen: YES
@@ -74,7 +79,7 @@ targets:
         PRODUCT_NAME: MainstreamShare
         PRODUCT_BUNDLE_IDENTIFIER: com.local.mainstream.share
         MARKETING_VERSION: "2.1"
-        CURRENT_PROJECT_VERSION: "3"
+        CURRENT_PROJECT_VERSION: "4"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         APPLICATION_EXTENSION_API_ONLY: YES

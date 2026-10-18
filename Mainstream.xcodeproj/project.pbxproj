@@ -15,12 +15,14 @@
 		397062333DB829E55229CF72 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D501F428C95F4F9A5519EF27 /* ShareViewController.swift */; };
 		5714063125C709A2E45CCFC4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1DE2204BBF4B7A2E9B2A3FC0 /* Assets.xcassets */; };
 		8DABE5ED2FB439C3924E54A5 /* Media.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6557C75EC56540FC9575FF6E /* Media.swift */; };
+		995609898A534613844F11B1 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = DF73D17F2E01D998822C79A0 /* PrivacyInfo.xcprivacy */; };
 		A82793B5E212D56FD857C093 /* MainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B1CEB87032F54DBD392DCFF /* MainApp.swift */; };
 		AD8295A88DDE9CA79F952051 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BFC6197D4E44E55D053465A /* ContentView.swift */; };
 		AF403611455CF7CF783CC167 /* Sender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 835F1AAA96D844031A506021 /* Sender.swift */; };
 		B59182073FE90C38429DC035 /* PayloadPrep.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B76AF82C438AEDF38AD5E6 /* PayloadPrep.swift */; };
 		D4455BF311CE4FE75F7394E2 /* Sender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 835F1AAA96D844031A506021 /* Sender.swift */; };
 		EC3F69B534EF522CD5DC041B /* Composers.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6F8137B90CBCDC94F18C41 /* Composers.swift */; };
+		F17DBFAC366622C5CC51F14D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D6626E7D6D0A954032169E54 /* PrivacyInfo.xcprivacy */; };
 		FEB16E90401353BF1ED6F2BD /* ResultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F6AD1646746ED725BD437E8 /* ResultView.swift */; };
 /* End PBXBuildFile section */
 
@@ -59,7 +61,10 @@
 		A7127BC53FC4F7E934116884 /* Mainstream.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Mainstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A8B76AF82C438AEDF38AD5E6 /* PayloadPrep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayloadPrep.swift; sourceTree = "<group>"; };
 		AE26CA1F4A20AE721F2A6EA0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		CBB3EAA73769009EF34C07E3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		D501F428C95F4F9A5519EF27 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		D6626E7D6D0A954032169E54 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		DF73D17F2E01D998822C79A0 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		E4EC713A7F8B98DFF4CE345F /* Core */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Core; path = Core; sourceTree = SOURCE_ROOT; };
 		EB6F8137B90CBCDC94F18C41 /* Composers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Composers.swift; sourceTree = "<group>"; };
 		F2737BD60FEA1AE6E71615A1 /* Receiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Receiver.swift; sourceTree = "<group>"; };
@@ -89,6 +94,7 @@
 			isa = PBXGroup;
 			children = (
 				AE26CA1F4A20AE721F2A6EA0 /* Info.plist */,
+				DF73D17F2E01D998822C79A0 /* PrivacyInfo.xcprivacy */,
 				D501F428C95F4F9A5519EF27 /* ShareViewController.swift */,
 			);
 			path = Share;
@@ -126,8 +132,10 @@
 				1DE2204BBF4B7A2E9B2A3FC0 /* Assets.xcassets */,
 				EB6F8137B90CBCDC94F18C41 /* Composers.swift */,
 				1BFC6197D4E44E55D053465A /* ContentView.swift */,
+				CBB3EAA73769009EF34C07E3 /* Info.plist */,
 				4B1CEB87032F54DBD392DCFF /* MainApp.swift */,
 				6557C75EC56540FC9575FF6E /* Media.swift */,
+				D6626E7D6D0A954032169E54 /* PrivacyInfo.xcprivacy */,
 				F2737BD60FEA1AE6E71615A1 /* Receiver.swift */,
 				7F6AD1646746ED725BD437E8 /* ResultView.swift */,
 			);
@@ -175,6 +183,7 @@
 			buildConfigurationList = A8CE129BA36AD07A4D8CFDDC /* Build configuration list for PBXNativeTarget "MainstreamShare" */;
 			buildPhases = (
 				F848C6DA6E5E76F4EBD7A036 /* Sources */,
+				F27DE250A493A14DC354055F /* Resources */,
 				1A7A9B8CA42BF5A1E0372845 /* Frameworks */,
 			);
 			buildRules = (
@@ -235,6 +244,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				5714063125C709A2E45CCFC4 /* Assets.xcassets in Resources */,
+				F17DBFAC366622C5CC51F14D /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F27DE250A493A14DC354055F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				995609898A534613844F11B1 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -284,16 +302,16 @@
 				CODE_SIGN_ENTITLEMENTS = Mainstream.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Mainstream;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Receives data shown on another screen and takes photos to send.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Adds contacts you receive.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sends your current location when you choose to.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records audio to send.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saves photos and videos you receive.";
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -316,7 +334,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				INFOPLIST_FILE = Share/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -339,16 +357,16 @@
 				CODE_SIGN_ENTITLEMENTS = Mainstream.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Mainstream;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Receives data shown on another screen and takes photos to send.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Adds contacts you receive.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sends your current location when you choose to.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records audio to send.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saves photos and videos you receive.";
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiresFullScreen = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -427,7 +445,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				INFOPLIST_FILE = Share/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

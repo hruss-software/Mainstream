@@ -23,9 +23,16 @@ struct ContentView: View {
     @State private var pickingContact = false
     @State private var composingWiFi = false
     @StateObject private var locator = LocationFetcher()
+    @State private var loading = false        // a picked photo or video is being read
     @Environment(\.scenePhase) private var phase
 
     var body: some View {
+        GeometryReader { g in
+            main(height: g.size.height)
+        }
+    }
+
+    private func main(height: CGFloat) -> some View {
         ZStack {
             CameraPreview(layer: rx.preview, onTap: { rx.focus(atLayerPoint: $0) }, onPinch: { scale, state in
                 if state == .began { pinchBase = rx.zoom }
@@ -37,6 +44,24 @@ struct ContentView: View {
                 .allowsHitTesting(false)
                 .animation(.easeInOut(duration: 0.25), value: rx.locked)
             Color.white.opacity(flash ? 0.8 : 0).ignoresSafeArea().allowsHitTesting(false)
+            if rx.cameraDenied {
+                // the camera is off for this app: one tap to its Settings page
+                Button {
+                    if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) }
+                } label: {
+                    Image(systemName: "camera.badge.ellipsis")
+                        .font(.system(size: 40, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(width: 96, height: 96)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .accessibilityLabel("Allow camera access in Settings")
+            }
+            if loading {
+                ProgressView().controlSize(.large).tint(.white)
+                    .frame(width: 88, height: 88)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            }
             VStack(spacing: 0) {
                 HStack(alignment: .top) {
                     Spacer()
@@ -54,35 +79,45 @@ struct ContentView: View {
                 Spacer()
                 HStack {
                     Spacer()
-                    CameraControls(rx: rx, multiCam: $multiCam)
+                    // the focus slider gives way on short screens (Display Zoom, small phones)
+                    CameraControls(rx: rx, multiCam: $multiCam, sliderLength: min(190, max(96, height - 500)))
                 }
                 .padding(.trailing, 12)
+                .opacity(rx.cameraDenied ? 0 : 1)
                 Spacer()
-                HStack(spacing: 24) {
+                HStack(spacing: 0) {
                     if more {
-                        Button { more = false } label: { icon("chevron.left") }
-                        Button { pickingContact = true } label: { icon("person.crop.circle") }
-                        Button { composingWiFi = true } label: { icon("wifi") }
+                        Button { more = false } label: { icon("chevron.left") }.accessibilityLabel("Back")
+                        Button { pickingContact = true } label: { icon("person.crop.circle") }.accessibilityLabel("Send a contact")
+                        Button { composingWiFi = true } label: { icon("wifi") }.accessibilityLabel("Send a Wi-Fi network")
                         Button { locator.fetch { send($0) } } label: {
-                            if locator.busy { ProgressView().frame(width: 30, height: 30) } else { icon("location") }
+                            if locator.busy { ProgressView().tint(.white).frame(minWidth: 44, maxWidth: .infinity, minHeight: 44) } else { icon("location") }
                         }
+                        .accessibilityLabel("Send my location")
                     } else {
-                        Button { composing = true } label: { icon("textformat") }
+                        Button { composing = true } label: { icon("textformat") }.accessibilityLabel("Send text")
                         PhotosPicker(selection: $photo, matching: .any(of: [.images, .videos])) { icon("photo") }
-                        Button { shoot() } label: { icon("camera") }
-                        Button { recording = true } label: { icon("mic") }
-                        Button { importing = true } label: { icon("doc") }
-                        Button { more = true } label: { icon("ellipsis") }
+                            .accessibilityLabel("Send a photo or video")
+                        Button { shoot() } label: { icon("camera") }.accessibilityLabel("Take a photo to send")
+                            .disabled(rx.cameraDenied)
+                        Button { recording = true } label: { icon("mic") }.accessibilityLabel("Record audio to send")
+                        Button { importing = true } label: { icon("doc") }.accessibilityLabel("Send a file")
+                        Button { more = true } label: { icon("ellipsis") }.accessibilityLabel("More")
                     }
                 }
                 .animation(.easeInOut(duration: 0.18), value: more)
-                .padding(.horizontal, 22)
-                .padding(.vertical, 16)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: 380)
                 .background(.ultraThinMaterial, in: Capsule())
+                .padding(.horizontal, 12)
                 .padding(.bottom, 12)
             }
         }
         .preferredColorScheme(.dark)
+        .sensoryFeedback(.success, trigger: rx.received?.id) { _, new in new != nil }
+        // keep the phone awake while a transfer is coming in (the camera stops when it locks)
+        .onChange(of: rx.active) { _, on in if outgoing == nil { UIApplication.shared.isIdleTimerDisabled = on } }
         .onAppear {
             rx.setMultiCam(multiCam)
             rx.start()
@@ -96,6 +131,7 @@ struct ContentView: View {
         }
         .onChange(of: phase) { _, p in
             if p == .active && outgoing == nil && !recording { rx.start() } else if p != .active { rx.stop() }
+            if p != .active && outgoing == nil { UIApplication.shared.isIdleTimerDisabled = false }
         }
         .onChange(of: multiCam) { _, on in rx.setMultiCam(on) }
         // the receiver drops to one camera if the pair fails or overheats
@@ -103,7 +139,9 @@ struct ContentView: View {
         .onChange(of: outgoing?.id) { _, id in if id != nil { rx.stop() } }
         .onChange(of: photo) { _, item in
             guard let item else { return }
+            loading = true
             Task {
+                defer { loading = false }
                 if let data = try? await item.loadTransferable(type: Data.self) {
                     let type = item.supportedContentTypes.first
                     let video = type?.conforms(to: .movie) == true
@@ -151,17 +189,20 @@ struct ContentView: View {
                 UIApplication.shared.isIdleTimerDisabled = false
                 Brightness.restore()
             }
+            .sensoryFeedback(.impact(weight: .light), trigger: o.id)
         }
         .sheet(item: $rx.received, onDismiss: { rx.reset() }) { r in
             ResultView(payload: r.payload)
         }
     }
 
+    /// Payload-bar icon: items share the bar's width equally, with at least a 44 pt target.
     private func icon(_ name: String) -> some View {
         Image(systemName: name)
             .font(.system(size: 21, weight: .medium))
             .foregroundStyle(.white)
-            .frame(width: 30, height: 30)
+            .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
     }
 
     private func shoot() {
@@ -180,6 +221,7 @@ struct ContentView: View {
 struct CameraControls: View {
     @ObservedObject var rx: Receiver
     @Binding var multiCam: Bool
+    var sliderLength: CGFloat = 190
 
     private var zoomLabel: String {
         rx.zoom < 9.95 ? String(format: rx.zoom.truncatingRemainder(dividingBy: 1) < 0.05 ? "%.0f×" : "%.1f×", rx.zoom) : String(format: "%.0f×", rx.zoom)
@@ -198,12 +240,17 @@ struct CameraControls: View {
                     .frame(width: 36, height: 30)
             }
             .disabled(rx.maxZoom <= 1)
+            .accessibilityLabel("Zoom")
+            .accessibilityValue(zoomLabel)
+            .sensoryFeedback(.selection, trigger: rx.zoom > 1.5 ? (rx.zoom > 3 ? 2 : 1) : 0)
             Image(systemName: "mountain.2").font(.system(size: 13))
             Slider(value: Binding(get: { Double(rx.lensPosition) }, set: { rx.setLens(Float($0)) }),
                    in: (rx.macroAvailable ? -Double(Receiver.macroRange) : 0)...1)
-                .frame(width: 190)
+                .frame(width: sliderLength)
                 .rotationEffect(.degrees(-90))
-                .frame(width: 30, height: 190)
+                .frame(width: 30, height: sliderLength)
+                .accessibilityLabel("Focus distance")
+                .sensoryFeedback(.impact(weight: .light), trigger: rx.lensPosition < 0)
             Image(systemName: "camera.macro").font(.system(size: 13))
                 .foregroundStyle(rx.lensPosition < 0 ? .yellow : .white.opacity(0.85))
             Button { rx.continuousFocus() } label: {
@@ -212,6 +259,7 @@ struct CameraControls: View {
                     .foregroundStyle(rx.manualFocus ? .white : .yellow)
                     .frame(width: 36, height: 36)
             }
+            .accessibilityLabel("Autofocus")
             if Receiver.multiCamSupported {
                 Button { multiCam.toggle() } label: {
                     Image(systemName: "camera.on.rectangle")
@@ -219,6 +267,8 @@ struct CameraControls: View {
                         .foregroundStyle(multiCam ? .yellow : .white)
                         .frame(width: 36, height: 36)
                 }
+                .accessibilityLabel("Use two cameras")
+                .accessibilityAddTraits(multiCam ? .isSelected : [])
             }
         }
         .foregroundStyle(.white.opacity(0.85))
@@ -277,6 +327,8 @@ struct ReceiveGauge: View {
             }
         }
         .foregroundStyle(.white.opacity(active ? 0.95 : 0.6))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Received \(Int((progress * 100).rounded(.down))) percent, \(rateText(rate))")
         .padding(.leading, 6)
         .padding(.trailing, 12)
         .frame(height: 42)

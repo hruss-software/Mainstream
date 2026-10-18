@@ -23,6 +23,7 @@ final class Receiver: NSObject, ObservableObject {
     @Published var lensPosition: Float = 0.5
     @Published private(set) var manualFocus = false
     @Published private(set) var macroAvailable = false
+    @Published private(set) var cameraDenied = false
     @Published private(set) var zoom: CGFloat = 1
     @Published private(set) var maxZoom: CGFloat = 1
     static let macroRange: Float = 0.6        // slider span below 0
@@ -73,6 +74,18 @@ final class Receiver: NSObject, ObservableObject {
     // MARK: lifecycle
 
     func start() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { ok in
+                DispatchQueue.main.async { if ok { self.start() } else { self.cameraDenied = true } }
+            }
+            return
+        case .denied, .restricted:
+            cameraDenied = true
+            return
+        default:
+            cameraDenied = false
+        }
         sessionQueue.async { [self] in
             running = true
             if session == nil { build() }
