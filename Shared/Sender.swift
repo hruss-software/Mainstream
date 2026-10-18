@@ -160,6 +160,24 @@ struct IconSlider: View {
     }
 }
 
+/// Style for icon-only buttons in tight rows. With the Button Shapes accessibility setting on,
+/// the system style pads each button outward (rows then overflow small screens); this one
+/// draws the shape inside the icon's own space instead, so the layout never grows.
+struct IconButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityShowButtonShapes) private var shapes
+    @Environment(\.isEnabled) private var enabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background {
+                if shapes { Circle().fill(Color.primary.opacity(0.14)).frame(width: 40, height: 40) }
+            }
+            .contentShape(Rectangle())
+            .opacity(!enabled ? 0.35 : configuration.isPressed ? 0.5 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 struct CloseButton: View {
     let action: () -> Void
     var body: some View {

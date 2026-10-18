@@ -31,8 +31,11 @@ final class Receiver: NSObject, ObservableObject {
 
     static var multiCamSupported: Bool { AVCaptureMultiCamSession.isMultiCamSupported }
 
-    let preview = AVCaptureVideoPreviewLayer()
-    let pipPreview = AVCaptureVideoPreviewLayer()
+    /// Preview layers belong to one capture session for life: every rebuilt session gets new
+    /// ones. Moving a layer between sessions races iOS's background reconfiguration and aborts
+    /// the app (seen on device when switching to two cameras).
+    @Published private(set) var preview = Receiver.makeLayer(nil)
+    @Published private(set) var pipPreview: AVCaptureVideoPreviewLayer?
     private var session: AVCaptureSession?
     private var devices: [AVCaptureDevice] = []
     private var pipes: [CameraPipe] = []
@@ -44,6 +47,7 @@ final class Receiver: NSObject, ObservableObject {
     private var wantMulti = false
     private var pressureWatch: [NSKeyValueObservation] = []
     private var lastRestart: TimeInterval = 0
+    private var retired: [AVCaptureSession] = []
     private var macroDevice: AVCaptureDevice?   // single-camera mode: the ultra-wide, if it focuses closer
     private var mainDevice: AVCaptureDevice?
     private var inMacro = false
@@ -63,8 +67,6 @@ final class Receiver: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        preview.videoGravity = .resizeAspectFill
-        pipPreview.videoGravity = .resizeAspectFill
         let nc = NotificationCenter.default
         // camera failures (often a multi-camera pair overheating) fall back instead of going dark
         nc.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: nil, queue: nil) { [weak self] n in self?.sessionFailed(n, interrupted: false) }
@@ -147,18 +149,26 @@ final class Receiver: NSObject, ObservableObject {
 
     // MARK: camera graph
 
+    private static func makeLayer(_ session: AVCaptureSession?, connected: Bool = true) -> AVCaptureVideoPreviewLayer {
+        let l: AVCaptureVideoPreviewLayer
+        if let session { l = connected ? AVCaptureVideoPreviewLayer(session: session) : AVCaptureVideoPreviewLayer(sessionWithNoConnection: session) } else { l = AVCaptureVideoPreviewLayer() }
+        l.videoGravity = .resizeAspectFill
+        return l
+    }
+
+    /// sessionQueue: a replaced session is only stopped, never reconfigured, and kept alive a
+    /// few seconds so iOS can finish with it before it is released.
+    private func retire(_ s: AVCaptureSession) {
+        s.stopRunning()
+        retired.append(s)
+        sessionQueue.asyncAfter(deadline: .now() + 5) { [weak self] in self?.retired.removeAll { $0 === s } }
+    }
+
     /// sessionQueue only.
     private func build() {
         pressureWatch.forEach { $0.invalidate() }
         pressureWatch = []
-        if let old = session {
-            old.stopRunning()
-            old.beginConfiguration()
-            for c in old.connections { old.removeConnection(c) }
-            for i in old.inputs { old.removeInput(i) }
-            for o in old.outputs { old.removeOutput(o) }
-            old.commitConfiguration()
-        }
+        if let old = session { retire(old) }
         session = nil
         pipes = []
         setDevices([])
@@ -223,10 +233,13 @@ final class Receiver: NSObject, ObservableObject {
         setDevices([device])
         applyZoom()
         pipes = [pipe]
-        preview.session = s
-        pipPreview.session = nil
+        let layer = Receiver.makeLayer(s)
         let macro = macroDevice != nil
-        DispatchQueue.main.async { self.macroAvailable = macro }
+        DispatchQueue.main.async {
+            self.preview = layer
+            self.pipPreview = nil
+            self.macroAvailable = macro
+        }
     }
 
     /// sessionQueue, single-camera session: move between the main and the macro camera.
@@ -284,6 +297,7 @@ final class Receiver: NSObject, ObservableObject {
         var ok = true
         var newPipes: [CameraPipe] = []
         var photo: AVCapturePhotoOutput?
+        var ports: [AVCaptureInput.Port] = []
         for (i, dev) in [wide, second].enumerated() {
             guard let input = try? AVCaptureDeviceInput(device: dev), s.canAddInput(input) else { ok = false; break }
             s.addInputWithNoConnections(input)
@@ -297,10 +311,7 @@ final class Receiver: NSObject, ObservableObject {
             s.addConnection(c)
             if c.isVideoStabilizationSupported { c.preferredVideoStabilizationMode = .off }
             newPipes.append(pipe)
-            let layer = i == 0 ? preview : pipPreview
-            layer.setSessionWithNoConnection(s)
-            let pc = AVCaptureConnection(inputPort: port, videoPreviewLayer: layer)
-            if s.canAddConnection(pc) { s.addConnection(pc) }
+            ports.append(port)
             if i == 0 {
                 let p = AVCapturePhotoOutput()
                 if s.canAddOutput(p) {
@@ -319,16 +330,22 @@ final class Receiver: NSObject, ObservableObject {
             }
         }
         s.commitConfiguration()
-        guard ok, s.hardwareCost <= 1, s.systemPressureCost <= 1 else {
-            // tear down completely so the single-camera session can take the devices
-            s.beginConfiguration()
-            for c in s.connections { s.removeConnection(c) }
-            for i in s.inputs { s.removeInput(i) }
-            for o in s.outputs { s.removeOutput(o) }
-            s.commitConfiguration()
-            preview.session = nil
-            pipPreview.session = nil
+        guard ok, ports.count == 2, s.hardwareCost <= 1, s.systemPressureCost <= 1 else {
+            // never started and no preview attached: just let it go
+            retire(s)
             return false
+        }
+        // previews only once the pair is known to work, each on its own new layer
+        let layers = [Receiver.makeLayer(s, connected: false), Receiver.makeLayer(s, connected: false)]
+        s.beginConfiguration()
+        for (port, layer) in zip(ports, layers) {
+            let pc = AVCaptureConnection(inputPort: port, videoPreviewLayer: layer)
+            if s.canAddConnection(pc) { s.addConnection(pc) }
+        }
+        s.commitConfiguration()
+        DispatchQueue.main.async {
+            self.preview = layers[0]
+            self.pipPreview = layers[1]
         }
         session = s
         mainDevice = wide

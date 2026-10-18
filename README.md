@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="Docs/mark-dark.png">
+    <img src="Docs/mark-light.png" width="112" alt="Mainstream logo">
+  </picture>
+</p>
+
 # Mainstream
 
 An iOS app that sends text, photos and videos (from the library or taken in the app), audio recordings, contacts, Wi-Fi networks, your location and any file between phones as an animated colour code: one phone shows it, the other reads it with its camera. In simulation it moves ~0.4–1.9 MB/s, depending on focus and distance. It also appears in other apps' share sheets.
@@ -27,7 +34,7 @@ Open `Mainstream.xcodeproj` in Xcode 27.1, or run `xcodegen generate` after edit
 | Receiver | Per-cell local normalisation and blind colour-crosstalk inversion. A decision-feedback inter-cell equaliser roughly doubles goodput under defocus in simulation. Every stage runs in parallel, and each camera feeds a small pool of decoders, so dense frames (8–12 ms each on an M3) keep up with 60 fps instead of being dropped. |
 | Camera | 60 fps at the highest resolution available (4K60 when single). Exposure is capped at 1/250 s, with −0.7 EV, near-range autofocus and stabilisation off. Multi-camera mode feeds both cameras, at up to 1440p each, into one transfer. That gives diversity (a second look and a different focus distance) rather than double the raw rate. Frame rates are halved under thermal pressure. |
 
-The app icon is drawn by `Tools/make-icon.swift` (instructions at the top of the file).
+The app icon and the logo in this README are drawn by `Tools/make-icon.swift` from the brand mark (instructions at the top of the file).
 
 ## Simulation and tests
 `swift test -c release` in `Core` covers Reed–Solomon, the fountain code, compression, the layouts and the end-to-end camera link, plus fuzz tests that feed the decoders noise, badly framed codes, random packets and random codewords.

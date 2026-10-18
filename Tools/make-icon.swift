@@ -1,73 +1,60 @@
+// Renders the Mainstream mark: a finder-pattern frame (black, white, black) around a 3×3 grid
+// of the code's colours.
+//   swiftc -O Tools/make-icon.swift -o /tmp/make-icon
+//   for v in light dark tinted; do /tmp/make-icon Sources/Assets.xcassets/AppIcon.appiconset/AppIcon-$v.png $v; done
+//   /tmp/make-icon Docs/mark-light.png mark-light 512   # README: black frame on transparent
+//   /tmp/make-icon Docs/mark-dark.png mark-dark 512     # README: white frame on transparent
 import CoreGraphics
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-// Renders Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png:
-//   swiftc -O Tools/make-icon.swift -o /tmp/make-icon && for v in light dark tinted; do
-//     /tmp/make-icon Sources/Assets.xcassets/AppIcon.appiconset/AppIcon-$v.png $v; done
-// Mainstream icon: a stream of data — three flowing bands that turn into a column of
-// pixels, on a deep blue-to-teal field.
-let variant = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "light"   // light, dark, tinted
-let S = 1024
-let cs = CGColorSpaceCreateDeviceRGB()
-let ctx = CGContext(data: nil, width: S, height: S, bitsPerComponent: 8, bytesPerRow: 0, space: cs,
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+let args = CommandLine.arguments
+let variant = args.count > 2 ? args[2] : "light"
+let S = args.count > 3 ? Int(args[3])! : 1024
 let W = CGFloat(S)
-// background
-// dark and tinted variants sit on near-black; tinted is grayscale for the system to colour
-let bgColors: [CGColor] = variant == "light"
-    ? [CGColor(red: 0.04, green: 0.07, blue: 0.22, alpha: 1), CGColor(red: 0.02, green: 0.42, blue: 0.55, alpha: 1)]
-    : variant == "dark"
-    ? [CGColor(red: 0.01, green: 0.02, blue: 0.05, alpha: 1), CGColor(red: 0.02, green: 0.09, blue: 0.13, alpha: 1)]
-    : [CGColor(gray: 0, alpha: 1), CGColor(gray: 0.06, alpha: 1)]
-let bg = CGGradient(colorsSpace: cs, colors: bgColors as CFArray, locations: [0, 1])!
-ctx.drawLinearGradient(bg, start: CGPoint(x: 0, y: W), end: CGPoint(x: W, y: 0), options: [])
-// soft glow
-let glow = CGGradient(colorsSpace: cs, colors: [CGColor(red: 0.3, green: 0.9, blue: 1, alpha: 0.28), CGColor(red: 0.3, green: 0.9, blue: 1, alpha: 0)] as CFArray, locations: [0, 1])!
-if variant != "tinted" { ctx.drawRadialGradient(glow, startCenter: CGPoint(x: W * 0.62, y: W * 0.5), startRadius: 0, endCenter: CGPoint(x: W * 0.62, y: W * 0.5), endRadius: W * 0.5, options: []) }
-// three waves flowing left → right, converging
-let colors: [(CGFloat, CGFloat, CGFloat)] = variant == "tinted"
-    ? [(0.7, 0.7, 0.7), (1, 1, 1), (0.6, 0.6, 0.6)]
-    : [(0.55, 0.95, 1.0), (1, 1, 1), (0.45, 0.75, 1.0)]
-for (n, c) in colors.enumerated() {
-    let off = CGFloat(n - 1)
-    let path = CGMutablePath()
-    let x0 = W * 0.14, x1 = W * 0.60
-    for i in 0...200 {
-        let t = CGFloat(i) / 200
-        let x = x0 + (x1 - x0) * t
-        let amp = W * 0.085 * (1 - t * 0.85)
-        let y = W * 0.5 + off * W * 0.115 * (1 - 0.8 * t) + amp * sin(t * .pi * 2.2)
-        if i == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.addLine(to: CGPoint(x: x, y: y)) }
-    }
-    ctx.addPath(path)
-    ctx.setStrokeColor(CGColor(red: c.0, green: c.1, blue: c.2, alpha: n == 1 ? 1 : 0.85))
-    ctx.setLineWidth(W * 0.045)
-    ctx.setLineCap(.round)
-    ctx.strokePath()
+let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+func rgb(_ hex: UInt32) -> CGColor {
+    CGColor(red: CGFloat(hex >> 16 & 0xff) / 255, green: CGFloat(hex >> 8 & 0xff) / 255, blue: CGFloat(hex & 0xff) / 255, alpha: 1)
 }
-// the stream resolves into pixels on the right
-var rng: UInt64 = 0x5EED
-func rnd() -> CGFloat { rng = rng &* 6364136223846793005 &+ 1442695040888963407; return CGFloat(rng >> 40) / CGFloat(1 << 24) }
-let cell = W * 0.052, gap = W * 0.012
-for col in 0..<4 {
-    for row in -3...3 {
-        let fade = 1 - CGFloat(abs(row)) / 4.2
-        guard rnd() < 0.55 + 0.4 * fade - CGFloat(col) * 0.08 else { continue }
-        let x = W * 0.64 + CGFloat(col) * (cell + gap)
-        let y = W * 0.5 - cell / 2 + CGFloat(row) * (cell + gap)
-        let a = (0.55 + 0.45 * fade) * (1 - CGFloat(col) * 0.15)
-        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: a))
-        ctx.addPath(CGPath(roundedRect: CGRect(x: x, y: y, width: cell, height: cell), cornerWidth: cell * 0.22, cornerHeight: cell * 0.22, transform: nil))
-        ctx.fillPath()
+let ink = rgb(0x0E0E10), paper = rgb(0xFFFFFF)
+let magenta = rgb(0xE0369E), red = rgb(0xEE2B25), cyan = rgb(0x1BC5E6), green = rgb(0x17B85D), yellow = rgb(0xF6CA16)
+let tinted = variant == "tinted"
+func gray(_ c: CGColor) -> CGColor {
+    guard tinted, let p = c.components else { return c }
+    let l = 0.3 * p[0] + 0.59 * p[1] + 0.11 * p[2]
+    return CGColor(gray: l, alpha: 1)
+}
+
+// Proportions of the mark, from the brand artwork (fractions of the mark's width): a ring
+// 14.5% wide, then the interior, then a centred 3×3 grid starting at 28.9%.
+let ringW: CGFloat = 0.145, gridAt: CGFloat = 0.289
+let grid: [[CGColor]] = [[magenta, red, magenta], [paper, cyan, green], [green, yellow, paper]]
+
+let opaque = !variant.hasPrefix("mark")
+let ctx = CGContext(data: nil, width: S, height: S, bitsPerComponent: 8, bytesPerRow: 0, space: cs,
+                    bitmapInfo: opaque ? CGImageAlphaInfo.noneSkipLast.rawValue : CGImageAlphaInfo.premultipliedLast.rawValue)!
+ctx.translateBy(x: 0, y: W); ctx.scaleBy(x: 1, y: -1)        // top-left origin, like the artwork
+
+// Icons: the dark mark (white ring, black interior) on a black square, the mark spanning 75%.
+// mark-light: black ring, white interior, black grid squares; mark-dark: white ring, black
+// interior, white grid squares; both on transparent, filling the image.
+let dark = variant != "mark-light"
+let markRect = opaque ? CGRect(x: 0.125 * W, y: 0.125 * W, width: 0.75 * W, height: 0.75 * W) : CGRect(x: 0, y: 0, width: W, height: W)
+if opaque { ctx.setFillColor(gray(ink)); ctx.fill(CGRect(x: 0, y: 0, width: W, height: W)) }
+let M = markRect.width
+ctx.setFillColor(gray(dark ? paper : ink)); ctx.fill(markRect)
+ctx.setFillColor(gray(dark ? ink : paper)); ctx.fill(markRect.insetBy(dx: ringW * M, dy: ringW * M))
+let g0 = markRect.minX + gridAt * M, cell = (M - 2 * gridAt * M) / 3
+for (r, row) in grid.enumerated() {
+    for (c, color) in row.enumerated() {
+        let col = color === paper ? (dark ? paper : ink) : color
+        ctx.setFillColor(gray(col))
+        ctx.fill(CGRect(x: g0 + CGFloat(c) * cell, y: markRect.minY + gridAt * M + CGFloat(r) * cell, width: cell + 0.5, height: cell + 0.5))
     }
 }
-let img = ctx.makeImage()!
-// opaque output (App Store icons have no alpha)
-let out = CGContext(data: nil, width: S, height: S, bitsPerComponent: 8, bytesPerRow: 0, space: cs, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-out.draw(img, in: CGRect(x: 0, y: 0, width: S, height: S))
-let url = URL(fileURLWithPath: CommandLine.arguments[1])
+
+let url = URL(fileURLWithPath: args[1])
 let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)!
-CGImageDestinationAddImage(dest, out.makeImage()!, nil)
+CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
 CGImageDestinationFinalize(dest)

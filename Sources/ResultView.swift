@@ -84,7 +84,7 @@ struct ResultView: View {
         VStack(spacing: 0) {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            HStack(spacing: 40) {
+            HStack(spacing: 0) {
                 actions
                 if let text = plainText {
                     Button { UIPasteboard.general.string = text; done = true } label: { icon("doc.on.doc") }
@@ -94,12 +94,17 @@ struct ResultView: View {
                     ShareLink(item: file.url) { icon("square.and.arrow.up") }.accessibilityLabel("Share")
                 }
             }
+            .buttonStyle(IconButtonStyle())
+            .frame(maxWidth: 420)
+            .padding(.horizontal, 16)
             .padding(.vertical, 20)
-            .overlay(alignment: .trailing) {
+            .overlay(alignment: .top) {
+                // outcome of the last action, just above the row
                 if let done {
                     Image(systemName: done ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .font(.title3)
                         .foregroundStyle(done ? .green : .red)
-                        .padding(.trailing, 24)
+                        .offset(y: -12)
                         .transition(.opacity)
                 }
             }
@@ -120,8 +125,10 @@ struct ResultView: View {
         }
     }
 
+    /// Action-row icon: the row's buttons share its width, so up to five fit any screen.
     private func icon(_ name: String) -> some View {
-        Image(systemName: name).font(.title3).frame(minWidth: 32, minHeight: 32)
+        Image(systemName: name).font(.title3).foregroundStyle(Color.accentColor)
+            .frame(minWidth: 30, maxWidth: .infinity, minHeight: 44)
     }
 
     // MARK: content

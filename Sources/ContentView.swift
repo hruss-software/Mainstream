@@ -67,8 +67,8 @@ struct ContentView: View {
                     Spacer()
                     VStack(alignment: .trailing, spacing: 10) {
                         ReceiveGauge(progress: rx.progress, rate: rx.rate, hint: rx.hint, active: rx.active)
-                        if rx.dualActive {
-                            PipPreview(layer: rx.pipPreview)
+                        if rx.dualActive, let pip = rx.pipPreview {
+                            PipPreview(layer: pip)
                                 .frame(width: 84, height: 112)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
@@ -91,7 +91,7 @@ struct ContentView: View {
                         Button { pickingContact = true } label: { icon("person.crop.circle") }.accessibilityLabel("Send a contact")
                         Button { composingWiFi = true } label: { icon("wifi") }.accessibilityLabel("Send a Wi-Fi network")
                         Button { locator.fetch { send($0) } } label: {
-                            if locator.busy { ProgressView().tint(.white).frame(minWidth: 44, maxWidth: .infinity, minHeight: 44) } else { icon("location") }
+                            if locator.busy { ProgressView().tint(.white).frame(minWidth: 30, maxWidth: .infinity, minHeight: 44) } else { icon("location") }
                         }
                         .accessibilityLabel("Send my location")
                     } else {
@@ -105,6 +105,7 @@ struct ContentView: View {
                         Button { more = true } label: { icon("ellipsis") }.accessibilityLabel("More")
                     }
                 }
+                .buttonStyle(IconButtonStyle())
                 .animation(.easeInOut(duration: 0.18), value: more)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -128,6 +129,12 @@ struct ContentView: View {
             if let i = args.firstIndex(of: "-demoReceive"), i + 1 < args.count {
                 rx.received = Received(payload: Payload(kind: .text, name: "text.txt", data: Data(args[i + 1].utf8)))
             }
+            #if DEBUG
+            // stress test: flip between one and two cameras every 2.5 s
+            if args.contains("-cycleCams") {
+                Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { _ in multiCam.toggle() }
+            }
+            #endif
         }
         .onChange(of: phase) { _, p in
             if p == .active && outgoing == nil && !recording { rx.start() } else if p != .active { rx.stop() }
@@ -196,12 +203,13 @@ struct ContentView: View {
         }
     }
 
-    /// Payload-bar icon: items share the bar's width equally, with at least a 44 pt target.
+    /// Payload-bar icon: items share the bar's width equally (44 pt targets where there is room;
+    /// they may shrink rather than push the bar off a small screen).
     private func icon(_ name: String) -> some View {
         Image(systemName: name)
             .font(.system(size: 21, weight: .medium))
             .foregroundStyle(.white)
-            .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
+            .frame(minWidth: 30, maxWidth: .infinity, minHeight: 44)
             .contentShape(Rectangle())
     }
 
@@ -272,6 +280,7 @@ struct CameraControls: View {
             }
         }
         .foregroundStyle(.white.opacity(0.85))
+        .buttonStyle(IconButtonStyle())
         .padding(.vertical, 12)
         .padding(.horizontal, 6)
         .background(.ultraThinMaterial, in: Capsule())
@@ -348,6 +357,15 @@ struct CameraPreview: UIViewRepresentable {
         var onTap: ((CGPoint) -> Void)?
         var onPinch: ((CGFloat, UIGestureRecognizer.State) -> Void)?
         @objc func pinched(_ g: UIPinchGestureRecognizer) { onPinch?(g.scale, g.state) }
+        /// The receiver hands over a new layer whenever it rebuilds its camera session.
+        func show(_ l: AVCaptureVideoPreviewLayer) {
+            if preview !== l {
+                preview?.removeFromSuperlayer()
+                preview = l
+                layer.insertSublayer(l, at: 0)
+            }
+            setNeedsLayout()
+        }
         override func layoutSubviews() {
             super.layoutSubviews()
             CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -372,10 +390,9 @@ struct CameraPreview: UIViewRepresentable {
     func makeUIView(context: Context) -> Host {
         let v = Host()
         v.backgroundColor = .black
-        v.preview = layer
         v.onTap = onTap
         v.onPinch = onPinch
-        v.layer.addSublayer(layer)
+        v.show(layer)
         v.addGestureRecognizer(UITapGestureRecognizer(target: v, action: #selector(Host.tapped(_:))))
         v.addGestureRecognizer(UIPinchGestureRecognizer(target: v, action: #selector(Host.pinched(_:))))
         return v
@@ -384,7 +401,7 @@ struct CameraPreview: UIViewRepresentable {
     func updateUIView(_ v: Host, context: Context) {
         v.onTap = onTap
         v.onPinch = onPinch
-        v.setNeedsLayout()
+        v.show(layer)
     }
 }
 
@@ -403,10 +420,18 @@ struct PipPreview: UIViewRepresentable {
     func makeUIView(context: Context) -> Host {
         let v = Host()
         v.backgroundColor = .black
-        v.preview = layer
-        v.layer.addSublayer(layer)
+        update(v)
         return v
     }
 
-    func updateUIView(_ v: Host, context: Context) { v.setNeedsLayout() }
+    func updateUIView(_ v: Host, context: Context) { update(v) }
+
+    private func update(_ v: Host) {
+        if v.preview !== layer {
+            v.preview?.removeFromSuperlayer()
+            v.preview = layer
+            v.layer.addSublayer(layer)
+        }
+        v.setNeedsLayout()
+    }
 }
