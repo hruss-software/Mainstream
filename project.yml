@@ -21,6 +21,8 @@ targets:
     info:
       path: Sources/Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen:
           UIColorName: LaunchBackground
@@ -33,7 +35,7 @@ targets:
         PRODUCT_NAME: Mainstream
         PRODUCT_BUNDLE_IDENTIFIER: com.local.mainstream
         MARKETING_VERSION: "2.1"
-        CURRENT_PROJECT_VERSION: "5"
+        CURRENT_PROJECT_VERSION: "6"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
@@ -63,6 +65,8 @@ targets:
       path: Share/Info.plist
       properties:
         CFBundleDisplayName: Mainstream
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
@@ -79,7 +83,7 @@ targets:
         PRODUCT_NAME: MainstreamShare
         PRODUCT_BUNDLE_IDENTIFIER: com.local.mainstream.share
         MARKETING_VERSION: "2.1"
-        CURRENT_PROJECT_VERSION: "5"
+        CURRENT_PROJECT_VERSION: "6"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         APPLICATION_EXTENSION_API_ONLY: YES

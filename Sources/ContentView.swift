@@ -32,6 +32,14 @@ struct ContentView: View {
         }
     }
 
+    #if DEBUG
+    private static let stillCamera: UIImage? = {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "-stillCamera"), i + 1 < args.count else { return nil }
+        return UIImage(contentsOfFile: args[i + 1])
+    }()
+    #endif
+
     private func main(height: CGFloat) -> some View {
         ZStack {
             CameraPreview(layer: rx.preview, onTap: { rx.focus(atLayerPoint: $0) }, onPinch: { scale, state in
@@ -39,6 +47,15 @@ struct ContentView: View {
                 rx.setZoom(pinchBase * scale)
             })
             .ignoresSafeArea()
+            #if DEBUG
+            if let still = Self.stillCamera {
+                // App Store screenshots: a still image stands in for the camera
+                Color.clear.overlay { Image(uiImage: still).resizable().scaledToFill() }
+                    .clipped()
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
+            #endif
             Color.black.opacity(rx.locked ? 0 : 0.25)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
@@ -133,6 +150,18 @@ struct ContentView: View {
             // stress test: flip between one and two cameras every 2.5 s
             if args.contains("-cycleCams") {
                 Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { _ in multiCam.toggle() }
+            }
+            // App Store screenshots: -stillGauge progress,bytesPerSecond,hint
+            if let i = args.firstIndex(of: "-stillGauge"), i + 1 < args.count {
+                let v = args[i + 1].split(separator: ",").compactMap { Double($0) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    rx.progress = v[0]; rx.rate = v[1]; rx.hint = Int(v[2])
+                    rx.active = true; rx.locked = true
+                }
+            }
+            if let i = args.firstIndex(of: "-demoSendFile"), i + 1 < args.count, let d = FileManager.default.contents(atPath: args[i + 1]) {
+                let name = (args[i + 1] as NSString).lastPathComponent
+                outgoing = Outgoing(payload: Payload(kind: PayloadPrep.kind(forName: name), name: name, data: d))
             }
             #endif
         }

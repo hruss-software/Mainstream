@@ -36,7 +36,7 @@ If you're building under your own Apple developer account, change the bundle ide
 
 The Run action uses the Release configuration, because the decoder is too slow to keep up with the camera in a Debug build. The first launch on a new device under the debugger can sit on a black screen while LLDB loads symbols from the phone; that's Xcode, not the app.
 
-A few launch arguments help during development. Set them in the scheme's Arguments tab; the last two only work in a Debug build, so switch the Run configuration to Debug to use them.
+A few launch arguments help during development. Set them in the scheme's Arguments tab; all but the first two only work in a Debug build, so switch the Run configuration to Debug to use them.
 
 | Argument | Effect |
 |---|---|
@@ -44,6 +44,9 @@ A few launch arguments help during development. Set them in the scheme's Argumen
 | `-demoReceive "text"` | Opens the result screen as if that text had arrived |
 | `-viewport 320x568` | Squeezes the UI into a smaller screen, to check layouts |
 | `-cycleCams` | Switches between one and two cameras every 2.5 seconds |
+| `-demoSendFile /path/IMG.JPG` | Opens the sender with that file |
+| `-stillCamera /path/frame.png` | Shows that image in place of the camera, for App Store screenshots |
+| `-stillGauge 0.64,612000,1` | Sets the gauge to that progress, rate (bytes/s) and hint |
 
 ## How it works
 
